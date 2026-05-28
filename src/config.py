@@ -6,6 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="QGRAPH_AI_", extra="ignore")
 
+    environment: str = "development"
+    log_level: str = "info"
+
     service_name: str = "qgraph-ai-service"
     service_version: str = "0.1.0"
     render_schema_version: str = "v1"

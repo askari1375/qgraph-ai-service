@@ -1,6 +1,4 @@
-# ---------------------------
 # Python
-# ---------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,41 +15,30 @@ wheels/
 .venv/
 venv/
 
-# ---------------------------
 # Environment variables
-# ---------------------------
 .env
 .env.*
 !.env.example
 
-# ---------------------------
 # IDE / Editor
-# ---------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# ---------------------------
 # Testing / Coverage
-# ---------------------------
 .coverage
 coverage.xml
 htmlcov/
 .pytest_cache/
 
-# ---------------------------
 # Ruff / Mypy
-# ---------------------------
 .mypy_cache/
 .ruff_cache/
 
-# ---------------------------
 # OS files
-# ---------------------------
 .DS_Store
 Thumbs.db
-
 
 # Python tooling
 .python-version
@@ -64,3 +51,6 @@ Thumbs.db
 
 # Local data (important for your AI project later)
 data/
+
+# AI assistants
+.ai/

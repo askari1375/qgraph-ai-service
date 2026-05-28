@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,6 +13,7 @@ from src.config import get_settings
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
     app = FastAPI(
         title=settings.service_name,

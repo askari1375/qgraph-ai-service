@@ -1,0 +1,23 @@
+services:
+  ai-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qgraph-ai-service:prod
+    env_file:
+      - .env.prod
+    ports:
+      - "${QGRAPH_AI_BIND_ADDRESS:-127.0.0.1}:${QGRAPH_AI_HOST_PORT:-8001}:8001"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
