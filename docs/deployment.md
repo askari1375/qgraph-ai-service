@@ -64,6 +64,8 @@ Build and start:
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
+Production services use `restart: unless-stopped`. Docker restarts them after a VPS/EC2 reboot or transient container crash; if you manually stop a container, it stays stopped until you start it again.
+
 Check health:
 
 ```bash
