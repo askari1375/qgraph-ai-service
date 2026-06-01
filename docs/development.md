@@ -22,6 +22,25 @@ uv run uvicorn src.main:app --reload --port 8001
 
 Service will be available at `http://127.0.0.1:8001`.
 
+## Continuous Integration
+
+GitHub Actions runs `.github/workflows/ci.yml` on pushes and pull requests. CI uses
+Python `3.12`, uv `0.11.15`, and the checked-in `uv.lock`.
+
+The workflow mirrors these local checks:
+
+```bash
+uv sync --locked --dev
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest
+DOCKER_BUILDKIT=1 docker build --tag qgraph-ai-service:ci .
+```
+
+No type-check step runs yet because the project does not currently configure a
+type checker such as mypy, pyright, or ty. The Docker step only builds the image;
+it does not publish or deploy anything.
+
 ## Run the API with Docker Compose (Recommended for Local Integration)
 
 Build and start:
