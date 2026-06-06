@@ -8,6 +8,10 @@ services:
       - .env.prod
     ports:
       - "127.0.0.1:${QGRAPH_AI_HOST_PORT:-8001}:8001"
+    networks:
+      qgraph-private:
+        aliases:
+          - ai-backend
     restart: unless-stopped
     healthcheck:
       test:
@@ -21,3 +25,8 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+networks:
+  qgraph-private:
+    name: ${QGRAPH_PRIVATE_DOCKER_NETWORK:-qgraph-private}
+    external: true
