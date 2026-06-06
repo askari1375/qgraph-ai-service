@@ -57,6 +57,9 @@ docker compose up
 
 Service is exposed on `http://127.0.0.1:8001`.
 
+The local Compose file also binds the host port to `127.0.0.1`, so it is not
+published on all host interfaces during development.
+
 Live-reload behavior:
 
 - Compose bind-mounts the repository into the container (`.:/app`)

@@ -11,6 +11,7 @@ This guide describes the portable Docker setup for `qgraph-ai-service`. It is no
 - Container port `8001`
 - Dockerfile and Compose healthchecks for `GET /health`
 - Production Compose without bind mounts or reload
+- Host port pinned to `127.0.0.1` for Django-to-FastAPI calls on the same VPS
 
 The existing `docker-compose.yml` remains the local development workflow with bind mounts and Uvicorn reload.
 
@@ -37,10 +38,11 @@ Current app settings use the `QGRAPH_AI_` prefix and have safe defaults, but pro
 | `QGRAPH_AI_SEARCH_BACKEND_VERSION` | Search planning backend metadata |
 | `QGRAPH_AI_SEGMENTATION_MODEL_NAME` | Segmentation response model metadata |
 | `QGRAPH_AI_SEGMENTATION_MODEL_VERSION` | Segmentation response model metadata |
-| `QGRAPH_AI_BIND_ADDRESS` | Compose host bind address, default `127.0.0.1` |
 | `QGRAPH_AI_HOST_PORT` | Compose host port, default `8001` |
 
 The current bootstrap service does not read LLM provider keys, CORS settings, timeout settings, or Django callback URLs. Add those only when the code supports them.
+
+`QGRAPH_AI_BIND_ADDRESS` is intentionally not supported by the production Compose file. The host bind address is pinned to `127.0.0.1` to avoid accidentally publishing the AI service on `0.0.0.0`.
 
 ## Build The Image
 
@@ -84,15 +86,34 @@ Stop:
 docker compose --env-file .env.prod -f docker-compose.prod.yml down
 ```
 
-If you change `QGRAPH_AI_BIND_ADDRESS` or `QGRAPH_AI_HOST_PORT`, adjust the healthcheck URL you run from the host.
+If you change `QGRAPH_AI_HOST_PORT`, adjust the healthcheck URL you run from the host.
 
 ## Exposure Model
 
-The production Compose file publishes `127.0.0.1:8001` by default. This is intended for a same-host reverse proxy or another trusted local integration to publish HTTPS publicly.
+Production traffic should flow:
 
-The Uvicorn command uses `--proxy-headers --forwarded-allow-ips="*"` so FastAPI receives forwarded client and scheme headers correctly behind a reverse proxy. The wildcard is appropriate only when the container is reachable solely from a trusted proxy or Docker network. If the container is exposed directly to untrusted clients, replace it with specific trusted proxy IPs or networks.
+```text
+Frontend -> Django backend -> FastAPI AI service
+```
 
-This change does not add authentication, TLS, rate limiting, Caddy, Nginx, Traefik, or cloud firewall rules. Add those at the perimeter when the service becomes publicly reachable.
+Django remains responsible for authentication, authorization, subscription checks, rate limits, and deciding which AI behavior/model should be used.
+
+The production Compose file publishes only `127.0.0.1:${QGRAPH_AI_HOST_PORT:-8001}:8001` on the VPS. The Uvicorn process still listens on `0.0.0.0` inside the container so Docker can route traffic to it, but Docker exposes that port only on host loopback.
+
+Do not configure public DNS or a public reverse proxy route such as `ai.qgraph.org` to this service. If `ai.qgraph.org` currently points at the VPS or proxies to port `8001`, remove that route or make it return a closed/default response. Public HTTPS should terminate at Django, not at this FastAPI container.
+
+For a same-host production deployment, set Django's AI backend URL to the private loopback URL:
+
+```env
+AI_BACKEND_URL=http://127.0.0.1:8001
+SEARCH_AI_BACKEND_URL=http://127.0.0.1:8001
+```
+
+If Django and this service run as containers on the same Docker network, use the internal service URL instead, for example `http://ai-backend:8001`, and avoid publishing the AI service to the public internet.
+
+This change does not add authentication, TLS, rate limiting, Caddy, Nginx, Traefik, or cloud firewall rules to the AI service. Those controls belong on the public Django perimeter for this architecture.
+
+An optional internal shared-secret header can be added later as defense-in-depth between Django and FastAPI, but it must not be the primary protection. The primary protection is that the FastAPI port is not publicly reachable.
 
 ## Healthcheck
 
