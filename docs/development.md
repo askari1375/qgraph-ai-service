@@ -72,6 +72,25 @@ Live-reload behavior:
 - If Django runs on your host machine: use `http://127.0.0.1:8001`
 - If Django runs in Docker on the same Compose network: use `http://ai-backend:8001`
 
+## Prepared Segmentation Artifacts
+
+The artifact endpoints read reviewed JSON files from
+`data/segmentation_artifacts` by default. Override this with
+`QGRAPH_AI_SEGMENTATION_ARTIFACTS_DIR` when artifacts live somewhere else.
+
+Expected local layout:
+
+```text
+data/segmentation_artifacts/
+  {artifact_id}/
+    manifest.json
+    surahs/
+      {surah_number}.json
+```
+
+The per-surah payload uses `start_ayah_number` and `end_ayah_number`, which are
+ayah numbers within the surah.
+
 ## Quick Smoke Checks
 
 ```bash
@@ -108,4 +127,12 @@ curl http://127.0.0.1:8001/v1/search/jobs/<job_id>/result
 curl -X POST http://127.0.0.1:8001/v1/segmentation/generate \
   -H "Content-Type: application/json" \
   -d '{"surah_id":2,"ayahs":[],"options":{},"context":{}}'
+```
+
+```bash
+curl http://127.0.0.1:8001/v1/segmentation/artifacts/<artifact_id>/manifest
+```
+
+```bash
+curl http://127.0.0.1:8001/v1/segmentation/artifacts/<artifact_id>/surahs/1
 ```

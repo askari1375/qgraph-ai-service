@@ -3,7 +3,8 @@
 ## Purpose
 
 `qgraph-ai-service` is the bootstrap AI backend for QGraph.
-Its current job is to provide schema-correct, dummy responses to Django while keeping endpoint contracts stable.
+Its current job is to provide schema-correct responses and project-native
+prepared artifacts to Django while keeping endpoint contracts stable.
 
 ## Current Scope
 
@@ -14,7 +15,16 @@ Its current job is to provide schema-correct, dummy responses to Django while ke
 - Search async job status endpoint: `GET /v1/search/jobs/{job_id}`
 - Search async job result endpoint: `GET /v1/search/jobs/{job_id}/result`
 - Segmentation generation endpoint: `POST /v1/segmentation/generate`
+- Segmentation artifact manifest endpoint:
+  `GET /v1/segmentation/artifacts/{artifact_id}/manifest`
+- Segmentation artifact per-surah endpoint:
+  `GET /v1/segmentation/artifacts/{artifact_id}/surahs/{surah_number}`
 - Health endpoint: `GET /health`
+
+Prepared segmentation artifacts are file-backed by default under
+`data/segmentation_artifacts`, or the path set by
+`QGRAPH_AI_SEGMENTATION_ARTIFACTS_DIR`. The public transfer payload uses
+surah-local `start_ayah_number` and `end_ayah_number` fields.
 
 ## Project Structure (Bootstrap)
 

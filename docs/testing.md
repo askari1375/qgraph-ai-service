@@ -31,6 +31,7 @@ tests/
     test_health.py
     test_search_plan.py
     test_search_execute.py
+    test_segmentation_artifacts.py
     test_segmentation_generate.py
   services/
     test_planning.py
