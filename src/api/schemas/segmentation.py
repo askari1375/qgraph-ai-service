@@ -1,9 +1,11 @@
 from datetime import datetime
+import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 JsonObject = dict[str, Any]
+HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class AyahTranslationInput(BaseModel):
@@ -76,4 +78,93 @@ class SegmentationGenerateResponse(BaseModel):
             if segment.start_ayah <= previous_end:
                 raise ValueError("segments must be sorted and non-overlapping")
             previous_end = segment.end_ayah
+        return self
+
+
+class SegmentationArtifactManifestSurah(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    surah_number: int = Field(ge=1, le=114)
+    segment_count: int = Field(ge=0)
+
+
+class SegmentationArtifactManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    schema_version: str
+    title: str
+    description: str
+    model_name: str
+    model_version: str
+    params: JsonObject
+    produced_at: datetime
+    surahs: list[SegmentationArtifactManifestSurah]
+
+    @model_validator(mode="after")
+    def validate_unique_surahs(self) -> "SegmentationArtifactManifest":
+        surah_numbers = [surah.surah_number for surah in self.surahs]
+        if len(surah_numbers) != len(set(surah_numbers)):
+            raise ValueError("manifest surahs must not contain duplicate surah_number values")
+        return self
+
+
+class SegmentationArtifactTag(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    color: str
+    description: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("tag name must be non-empty")
+        return value
+
+    @field_validator("color")
+    @classmethod
+    def validate_color(cls, value: str) -> str:
+        if not HEX_COLOR_PATTERN.fullmatch(value):
+            raise ValueError("tag color must be a valid hex color")
+        return value
+
+
+class SegmentationArtifactSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_ayah_number: int = Field(ge=1)
+    end_ayah_number: int = Field(ge=1)
+    title: str
+    summary: str
+    tags: list[SegmentationArtifactTag]
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SegmentationArtifactSegment":
+        if self.start_ayah_number > self.end_ayah_number:
+            raise ValueError("start_ayah_number must be less than or equal to end_ayah_number")
+        return self
+
+
+class SegmentationArtifactSurahPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    external_id: str
+    surah_number: int = Field(ge=1, le=114)
+    model_name: str
+    model_version: str
+    params: JsonObject
+    produced_at: datetime
+    segments: list[SegmentationArtifactSegment]
+
+    @model_validator(mode="after")
+    def validate_sorted_non_overlapping_segments(self) -> "SegmentationArtifactSurahPayload":
+        previous_end = 0
+        for segment in self.segments:
+            if segment.start_ayah_number <= previous_end:
+                raise ValueError("segments must be sorted and non-overlapping")
+            previous_end = segment.end_ayah_number
         return self
