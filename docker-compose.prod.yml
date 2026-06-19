@@ -8,6 +8,11 @@ services:
       - .env.prod
     ports:
       - "127.0.0.1:${QGRAPH_AI_HOST_PORT:-8001}:8001"
+    volumes:
+      - type: bind
+        source: ${QGRAPH_AI_SEGMENTATION_ARTIFACTS_HOST_DIR:-/opt/qgraph/data/ai-service/segmentation_artifacts}
+        target: /app/data/segmentation_artifacts
+        read_only: true
     networks:
       qgraph-private:
         aliases:
