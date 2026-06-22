@@ -152,6 +152,12 @@ The service-side indexing path is deliberately narrow:
 DjangoCorpusClient -> build_search_documents -> OpenSearchLexicalBackend.index_documents
 ```
 
+OpenSearch indexing uses chunked `_bulk` requests rather than one request for
+the entire corpus. The default batch limits are 1,000 documents and 8 MiB per
+request. The local full-corpus indexing script exposes
+`--bulk-batch-document-count` and `--bulk-batch-max-bytes` for debugging or
+tuning.
+
 Documents use stable IDs:
 
 ```text

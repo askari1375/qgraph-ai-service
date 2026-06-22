@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 import httpx
@@ -19,6 +21,8 @@ from src.services.search_normalization import (
 
 OPEN_SEARCH_BACKEND_NAME = "open_search"
 LEXICAL_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_lexical_index_profile.v1"
+DEFAULT_BULK_BATCH_DOCUMENT_COUNT = 1000
+DEFAULT_BULK_BATCH_MAX_BYTES = 8 * 1024 * 1024
 
 
 class LexicalSearchBackendError(Exception):
@@ -144,6 +148,38 @@ class LexicalSearchResult(BaseModel):
     hits: list[LexicalSearchHit]
 
 
+@dataclass(frozen=True)
+class BulkIndexBatch:
+    number: int
+    documents: list[SearchIndexDocument]
+    body: str
+
+    @property
+    def document_count(self) -> int:
+        return len(self.documents)
+
+    @property
+    def byte_size(self) -> int:
+        return len(self.body.encode("utf-8"))
+
+    @property
+    def first_document_id(self) -> str:
+        return self.documents[0].id
+
+    @property
+    def last_document_id(self) -> str:
+        return self.documents[-1].id
+
+    def context(self) -> dict[str, Any]:
+        return {
+            "batch_number": self.number,
+            "document_count": self.document_count,
+            "byte_size": self.byte_size,
+            "first_document_id": self.first_document_id,
+            "last_document_id": self.last_document_id,
+        }
+
+
 class OpenSearchLexicalBackend:
     def __init__(self, *, index_name: str, adapter: OpenSearchAdapter):
         self.index_name = index_name
@@ -153,6 +189,9 @@ class OpenSearchLexicalBackend:
         self,
         documents: list[SearchIndexDocument],
         profile: LexicalIndexProfile,
+        *,
+        bulk_batch_document_count: int = DEFAULT_BULK_BATCH_DOCUMENT_COUNT,
+        bulk_batch_max_bytes: int = DEFAULT_BULK_BATCH_MAX_BYTES,
     ) -> None:
         create_response = self.adapter.put(
             f"/{self.index_name}",
@@ -164,24 +203,34 @@ class OpenSearchLexicalBackend:
             reason="index_create_failed",
         )
 
-        bulk_response = self.adapter.post(
-            "/_bulk",
-            content=_build_bulk_body(self.index_name, documents),
-            headers={"Content-Type": "application/x-ndjson"},
-        )
-        _raise_for_opensearch_error(
-            bulk_response,
-            message="Failed to bulk index OpenSearch lexical documents",
-            reason="bulk_index_failed",
-        )
-        bulk_payload = _response_json(bulk_response)
-        if isinstance(bulk_payload, dict) and bulk_payload.get("errors"):
-            raise LexicalSearchBackendError(
-                "OpenSearch bulk indexing reported document errors",
-                reason="bulk_index_document_errors",
-                status_code=bulk_response.status_code,
-                detail={"items": bulk_payload.get("items", [])[:5]},
+        for batch in iter_bulk_index_batches(
+            self.index_name,
+            documents,
+            max_documents=bulk_batch_document_count,
+            max_bytes=bulk_batch_max_bytes,
+        ):
+            bulk_response = self.adapter.post(
+                "/_bulk",
+                content=batch.body,
+                headers={"Content-Type": "application/x-ndjson"},
             )
+            _raise_for_opensearch_error(
+                bulk_response,
+                message="Failed to bulk index OpenSearch lexical documents",
+                reason="bulk_index_failed",
+                detail=batch.context(),
+            )
+            bulk_payload = _response_json(bulk_response)
+            if isinstance(bulk_payload, dict) and bulk_payload.get("errors"):
+                raise LexicalSearchBackendError(
+                    "OpenSearch bulk indexing reported document errors",
+                    reason="bulk_index_document_errors",
+                    status_code=bulk_response.status_code,
+                    detail={
+                        **batch.context(),
+                        "items": bulk_payload.get("items", [])[:5],
+                    },
+                )
 
     def search(
         self,
@@ -514,16 +563,70 @@ def _normalized_query_variants(query: str) -> list[str]:
     return variants
 
 
+def iter_bulk_index_batches(
+    index_name: str,
+    documents: list[SearchIndexDocument],
+    *,
+    max_documents: int = DEFAULT_BULK_BATCH_DOCUMENT_COUNT,
+    max_bytes: int = DEFAULT_BULK_BATCH_MAX_BYTES,
+) -> Iterator[BulkIndexBatch]:
+    if max_documents < 1:
+        raise ValueError("max_documents must be at least 1")
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be at least 1")
+
+    batch_documents: list[SearchIndexDocument] = []
+    batch_lines: list[str] = []
+    batch_bytes = 0
+    batch_number = 1
+
+    for document in documents:
+        document_lines = _bulk_document_lines(index_name, document)
+        document_bytes = sum(len(f"{line}\n".encode("utf-8")) for line in document_lines)
+        would_exceed_count = len(batch_documents) >= max_documents
+        would_exceed_bytes = batch_documents and batch_bytes + document_bytes > max_bytes
+
+        if would_exceed_count or would_exceed_bytes:
+            yield BulkIndexBatch(
+                number=batch_number,
+                documents=batch_documents,
+                body=_join_ndjson_lines(batch_lines),
+            )
+            batch_number += 1
+            batch_documents = []
+            batch_lines = []
+            batch_bytes = 0
+
+        batch_documents.append(document)
+        batch_lines.extend(document_lines)
+        batch_bytes += document_bytes
+
+    if batch_documents:
+        yield BulkIndexBatch(
+            number=batch_number,
+            documents=batch_documents,
+            body=_join_ndjson_lines(batch_lines),
+        )
+
+
 def _build_bulk_body(index_name: str, documents: list[SearchIndexDocument]) -> str:
     lines: list[str] = []
     for document in documents:
-        lines.append(
-            json.dumps(
-                {"index": {"_index": index_name, "_id": document.id}},
-                ensure_ascii=False,
-            )
-        )
-        lines.append(json.dumps(_document_source(document), ensure_ascii=False))
+        lines.extend(_bulk_document_lines(index_name, document))
+    return _join_ndjson_lines(lines)
+
+
+def _bulk_document_lines(index_name: str, document: SearchIndexDocument) -> list[str]:
+    return [
+        json.dumps(
+            {"index": {"_index": index_name, "_id": document.id}},
+            ensure_ascii=False,
+        ),
+        json.dumps(_document_source(document), ensure_ascii=False),
+    ]
+
+
+def _join_ndjson_lines(lines: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
@@ -596,14 +699,18 @@ def _raise_for_opensearch_error(
     *,
     message: str,
     reason: str,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     if response.status_code < 400:
         return
+    error_detail = {"body": response.text}
+    if detail:
+        error_detail.update(detail)
     raise LexicalSearchBackendError(
         message,
         reason=reason,
         status_code=response.status_code,
-        detail={"body": response.text},
+        detail=error_detail,
     )
 
 

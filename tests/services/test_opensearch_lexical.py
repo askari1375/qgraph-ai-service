@@ -109,6 +109,14 @@ def _profile():
     )
 
 
+def _documents_with_count(count: int):
+    base_document = _documents()[0]
+    return [
+        base_document.model_copy(update={"id": f"ayah:1:{index}:ar"})
+        for index in range(1, count + 1)
+    ]
+
+
 def test_opensearch_backend_builds_index_mapping_and_bulk_request():
     documents = _documents()
     profile = _profile()
@@ -136,6 +144,76 @@ def test_opensearch_backend_builds_index_mapping_and_bulk_request():
     assert '"_id": "ayah:1:1:translation:en-sahih"' in bulk_call["content"]
     assert '"text_ar": "بسم الله الرحمن الرحيم"' in bulk_call["content"]
     assert '"text_en": "In the name of Allah, the Entirely Merciful"' in bulk_call["content"]
+
+
+def test_opensearch_backend_sends_multiple_bulk_batches_when_document_limit_is_exceeded():
+    documents = _documents_with_count(5)
+    profile = build_lexical_index_profile(
+        index_name=INDEX_NAME,
+        documents=documents,
+        ranker_profile_id="lexical_bm25_v1",
+    )
+    adapter = _FakeAdapter(
+        put_response=_FakeResponse(200, {"acknowledged": True}),
+        post_responses=[
+            _FakeResponse(200, {"errors": False}),
+            _FakeResponse(200, {"errors": False}),
+            _FakeResponse(200, {"errors": False}),
+        ],
+    )
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    backend.index_documents(
+        documents,
+        profile,
+        bulk_batch_document_count=2,
+        bulk_batch_max_bytes=1024 * 1024,
+    )
+
+    bulk_calls = [call for call in adapter.calls if call["path"] == "/_bulk"]
+    assert len(bulk_calls) == 3
+    assert [call["content"].count('"index"') for call in bulk_calls] == [2, 2, 1]
+    for call in bulk_calls:
+        assert call["headers"] == {"Content-Type": "application/x-ndjson"}
+        assert call["content"].endswith("\n")
+        lines = call["content"].splitlines()
+        assert len(lines) % 2 == 0
+        assert all(lines)
+
+
+def test_opensearch_backend_bulk_status_failure_includes_batch_context():
+    documents = _documents_with_count(3)
+    profile = build_lexical_index_profile(
+        index_name=INDEX_NAME,
+        documents=documents,
+        ranker_profile_id="lexical_bm25_v1",
+    )
+    adapter = _FakeAdapter(
+        put_response=_FakeResponse(200, {"acknowledged": True}),
+        post_responses=[
+            _FakeResponse(200, {"errors": False}),
+            _FakeResponse(413, text="request entity too large"),
+        ],
+    )
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    with pytest.raises(LexicalSearchBackendError) as exc_info:
+        backend.index_documents(
+            documents,
+            profile,
+            bulk_batch_document_count=2,
+            bulk_batch_max_bytes=1024 * 1024,
+        )
+
+    assert exc_info.value.message == "Failed to bulk index OpenSearch lexical documents"
+    assert exc_info.value.reason == "bulk_index_failed"
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.detail["body"] == "request entity too large"
+    assert exc_info.value.detail["batch_number"] == 2
+    assert exc_info.value.detail["document_count"] == 1
+    assert exc_info.value.detail["first_document_id"] == "ayah:1:3:ar"
+    assert exc_info.value.detail["last_document_id"] == "ayah:1:3:ar"
+    assert exc_info.value.detail["byte_size"] > 0
 
 
 def test_opensearch_backend_builds_search_request_and_returns_hits():
