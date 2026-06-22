@@ -16,6 +16,9 @@ uv sync --dev
 
 ## Run the API Locally (Native)
 
+Local settings are read from `.env` when that file exists. Environment variables
+set in the shell still take precedence.
+
 ```bash
 uv run uvicorn src.main:app --reload --port 8001
 ```
@@ -66,6 +69,37 @@ Live-reload behavior:
 - Uvicorn runs with `--reload --reload-dir /app/src`
 - Changes under `src/` are picked up without rebuilding the image
 - Rebuild is only needed when dependencies change (`pyproject.toml` / `uv.lock`)
+
+## Run Local OpenSearch For Retrieval Debugging
+
+OpenSearch is available in the local Compose file behind the optional `search`
+profile. Start it when you want to debug live lexical retrieval:
+
+```bash
+docker compose --profile search up -d opensearch
+```
+
+Wait for it to become healthy, then check it from the host:
+
+```bash
+curl http://127.0.0.1:9200
+```
+
+Host-run scripts should use:
+
+```env
+QGRAPH_AI_OPENSEARCH_URL=http://127.0.0.1:9200
+```
+
+The AI container uses Docker DNS instead:
+
+```env
+QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+```
+
+The local Compose file sets that container value automatically. OpenSearch is
+not started by plain `docker compose up`; use the `search` profile so normal API
+development does not always start a heavier search service.
 
 ## Django Connectivity Notes
 

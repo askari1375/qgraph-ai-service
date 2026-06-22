@@ -49,6 +49,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Local debug experiments
+dev-scripts/
+
 # Local data (important for your AI project later)
 data/
 

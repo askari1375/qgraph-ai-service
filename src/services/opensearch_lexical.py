@@ -21,6 +21,22 @@ OPEN_SEARCH_BACKEND_NAME = "open_search"
 LEXICAL_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_lexical_index_profile.v1"
 
 
+class LexicalSearchBackendError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        status_code: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
+        self.status_code = status_code
+        self.detail = detail or {}
+
+
 class OpenSearchResponse(Protocol):
     status_code: int
     text: str
@@ -55,10 +71,10 @@ class OpenSearchHTTPAdapter:
         self._http_client = http_client or httpx.Client(timeout=timeout_seconds)
 
     def get(self, path: str) -> httpx.Response:
-        return self._http_client.get(f"{self.base_url}{path}")
+        return self._request("GET", path)
 
     def put(self, path: str, *, json_payload: dict[str, Any]) -> httpx.Response:
-        return self._http_client.put(f"{self.base_url}{path}", json=json_payload)
+        return self._request("PUT", path, json=json_payload)
 
     def post(
         self,
@@ -68,28 +84,29 @@ class OpenSearchHTTPAdapter:
         content: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        return self._http_client.post(
-            f"{self.base_url}{path}",
+        return self._request(
+            "POST",
+            path,
             json=json_payload,
             content=content,
             headers=headers,
         )
 
-
-class LexicalSearchBackendError(Exception):
-    def __init__(
-        self,
-        message: str,
-        *,
-        reason: str,
-        status_code: int | None = None,
-        detail: dict[str, Any] | None = None,
-    ):
-        super().__init__(message)
-        self.message = message
-        self.reason = reason
-        self.status_code = status_code
-        self.detail = detail or {}
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        try:
+            return self._http_client.request(method, f"{self.base_url}{path}", **kwargs)
+        except httpx.RequestError as exc:
+            raise LexicalSearchBackendError(
+                "Failed to reach OpenSearch lexical backend",
+                reason="opensearch_request_failed",
+                detail={
+                    "method": method,
+                    "path": path,
+                    "base_url": self.base_url,
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                },
+            ) from exc
 
 
 class LexicalIndexProfile(BaseModel):

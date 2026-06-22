@@ -1,10 +1,12 @@
 from typing import Any
 
+import httpx
 import pytest
 
 from src.api.schemas.corpus import QuranCorpusSnapshot
 from src.services.opensearch_lexical import (
     LexicalSearchBackendError,
+    OpenSearchHTTPAdapter,
     OpenSearchLexicalBackend,
     build_lexical_index_profile,
 )
@@ -212,3 +214,27 @@ def test_opensearch_backend_missing_index_is_clear_error():
     assert exc_info.value.message == "OpenSearch lexical index is not available"
     assert exc_info.value.reason == "index_not_found"
     assert exc_info.value.status_code == 404
+
+
+def test_opensearch_http_adapter_maps_connection_errors_to_clear_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 61] Connection refused", request=request)
+
+    backend = OpenSearchLexicalBackend(
+        index_name=INDEX_NAME,
+        adapter=OpenSearchHTTPAdapter(
+            base_url="http://127.0.0.1:9200",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        ),
+    )
+
+    with pytest.raises(LexicalSearchBackendError) as exc_info:
+        backend.search(query="mercy", filters={}, top_k=5)
+
+    assert exc_info.value.message == "Failed to reach OpenSearch lexical backend"
+    assert exc_info.value.reason == "opensearch_request_failed"
+    assert exc_info.value.detail["method"] == "GET"
+    assert exc_info.value.detail["path"] == f"/{INDEX_NAME}"
+    assert exc_info.value.detail["base_url"] == "http://127.0.0.1:9200"
+    assert exc_info.value.detail["error_type"] == "ConnectError"
+    assert "Connection refused" in exc_info.value.detail["error"]
