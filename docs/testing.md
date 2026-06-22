@@ -7,8 +7,13 @@ Bootstrap tests focus on:
 - endpoint wiring
 - schema shape correctness
 - structural constraints (`blocks[].order`, `items[].rank`)
+- corpus snapshot client payload validation
+- Arabic, Persian, and English normalization behavior
+- OpenSearch request construction through fake adapters
+- retrieval-mode errors for missing or stale lexical indexes
 
-Tests do not evaluate real AI quality in this phase.
+Tests do not evaluate real AI quality and do not require live Django or
+OpenSearch services in this phase.
 
 ## Run Tests
 
@@ -34,5 +39,10 @@ tests/
     test_segmentation_artifacts.py
     test_segmentation_generate.py
   services/
+    test_corpus_client.py
+    test_opensearch_lexical.py
     test_planning.py
+    test_search_documents.py
+    test_search_normalization.py
+    test_search_service_retrieval.py
 ```

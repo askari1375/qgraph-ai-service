@@ -38,6 +38,17 @@ Current app settings use the `QGRAPH_AI_` prefix and have safe defaults, but pro
 | `QGRAPH_AI_RENDER_SCHEMA_VERSION` | Search response render schema version |
 | `QGRAPH_AI_SEARCH_BACKEND_NAME` | Search planning backend metadata |
 | `QGRAPH_AI_SEARCH_BACKEND_VERSION` | Search planning backend metadata |
+| `QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE` | Search execution mode: `mock` or `opensearch` |
+| `QGRAPH_AI_SEARCH_CORPUS_SNAPSHOT_CACHE_DIR` | Local path reserved for pulled corpus snapshot data |
+| `QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID` | Active corpus snapshot id expected by retrieval indexes |
+| `QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH` | Active corpus snapshot hash expected by retrieval indexes |
+| `QGRAPH_AI_SEARCH_RANKER_PROFILE_ID` | Active lexical ranker profile metadata |
+| `QGRAPH_AI_DJANGO_INTERNAL_BASE_URL` | Private Django base URL for corpus snapshot pulls |
+| `QGRAPH_AI_DJANGO_INTERNAL_TOKEN` | Shared internal token sent to Django corpus export |
+| `QGRAPH_AI_DJANGO_INTERNAL_TIMEOUT_SECONDS` | Django corpus export timeout |
+| `QGRAPH_AI_OPENSEARCH_URL` | Private OpenSearch base URL for lexical retrieval |
+| `QGRAPH_AI_OPENSEARCH_INDEX_NAME` | OpenSearch index name for Quran lexical documents |
+| `QGRAPH_AI_OPENSEARCH_TIMEOUT_SECONDS` | OpenSearch request timeout |
 | `QGRAPH_AI_SEGMENTATION_MODEL_NAME` | Segmentation response model metadata |
 | `QGRAPH_AI_SEGMENTATION_MODEL_VERSION` | Segmentation response model metadata |
 | `QGRAPH_AI_SEGMENTATION_ARTIFACTS_HOST_DIR` | Host directory for prepared segmentation artifacts |
@@ -45,7 +56,8 @@ Current app settings use the `QGRAPH_AI_` prefix and have safe defaults, but pro
 | `QGRAPH_PRIVATE_DOCKER_NETWORK` | Optional shared external network name, default `qgraph-private` |
 | `QGRAPH_AI_HOST_PORT` | Compose host port, default `8001` |
 
-The current bootstrap service does not read LLM provider keys, CORS settings, timeout settings, or Django callback URLs. Add those only when the code supports them.
+The current service does not read LLM provider keys, CORS settings, or Django
+callback URLs. Add those only when the code supports them.
 
 `QGRAPH_AI_BIND_ADDRESS` is intentionally not supported by the production Compose file. The host bind address is pinned to `127.0.0.1` to avoid accidentally publishing the AI service on `0.0.0.0`.
 
@@ -64,6 +76,41 @@ For production imports, copy reviewed artifact files to the host directory
 before Django calls the artifact endpoints. Do not copy artifacts into the image
 or into a running container; those copies are not durable across rebuilds or
 container replacement.
+
+## Search Retrieval Configuration
+
+Keep production on mock search execution until OpenSearch is reachable, the
+Quran corpus snapshot has been indexed, and the active snapshot id/hash match
+the OpenSearch index profile:
+
+```env
+QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=mock
+```
+
+When enabling lexical retrieval, set:
+
+```env
+QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch
+QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
+QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
+QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+QGRAPH_AI_OPENSEARCH_INDEX_NAME=qgraph-ayah-lexical-v1
+QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
+QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
+```
+
+The AI service pulls Quran corpus snapshots from Django's private internal
+endpoint and sends the shared token as `X-QGraph-Internal-Token`. The snapshot
+is converted into versioned Arabic, Persian, and English search documents and
+indexed into OpenSearch with the corpus snapshot id/hash stored in index
+metadata.
+
+The production Compose file does not start OpenSearch. Run OpenSearch as part
+of the private backend infrastructure and make it reachable from `ai-backend`
+through `QGRAPH_AI_OPENSEARCH_URL`. Set retrieval mode to `opensearch` only
+after the index exists. In retrieval mode, missing OpenSearch configuration,
+missing indexes, or stale index profiles return a service error; the service
+does not silently fall back to mock results.
 
 ## Build The Image
 
@@ -147,7 +194,12 @@ the shared Docker network URL above.
 
 This change does not add authentication, TLS, rate limiting, Caddy, Nginx, Traefik, or cloud firewall rules to the AI service. Those controls belong on the public Django perimeter for this architecture.
 
-An optional internal shared-secret header can be added later as defense-in-depth between Django and FastAPI, but it must not be the primary protection. The primary protection is that the FastAPI port is not publicly reachable.
+`QGRAPH_AI_DJANGO_INTERNAL_TOKEN` is used by the AI service when pulling corpus
+snapshots from Django. It is not ingress authentication for Django-to-FastAPI
+calls. An optional internal shared-secret header can still be added later as
+defense-in-depth for Django-to-FastAPI requests, but it must not be the primary
+protection. The primary protection is that the FastAPI port is not publicly
+reachable.
 
 ## Healthcheck
 

@@ -3,8 +3,9 @@
 ## Purpose
 
 `qgraph-ai-service` is the bootstrap AI backend for QGraph.
-Its current job is to provide schema-correct responses and project-native
-prepared artifacts to Django while keeping endpoint contracts stable.
+Its current job is to provide stable AI-service contracts, project-native
+prepared artifacts, and the foundation for OpenSearch-backed Quran retrieval
+while keeping Django-facing response shapes stable.
 
 ## Current Scope
 
@@ -14,6 +15,12 @@ prepared artifacts to Django while keeping endpoint contracts stable.
 - Search async job create endpoint: `POST /v1/search/jobs`
 - Search async job status endpoint: `GET /v1/search/jobs/{job_id}`
 - Search async job result endpoint: `GET /v1/search/jobs/{job_id}/result`
+- Django corpus snapshot pull client for
+  `GET /api/internal/ai/corpus-snapshots/quran`
+- Versioned Arabic, Persian, and English normalization profiles
+- Ayah and translation search document builder with stable document IDs
+- OpenSearch lexical/BM25 backend, enabled only when
+  `QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch`
 - Segmentation generation endpoint: `POST /v1/segmentation/generate`
 - Segmentation artifact manifest endpoint:
   `GET /v1/segmentation/artifacts/{artifact_id}/manifest`
@@ -26,19 +33,29 @@ Prepared segmentation artifacts are file-backed by default under
 `QGRAPH_AI_SEGMENTATION_ARTIFACTS_DIR`. The public transfer payload uses
 surah-local `start_ayah_number` and `end_ayah_number` fields.
 
+Search execution defaults to mock mode for local development and existing
+Django integration tests. In `opensearch` mode, `/v1/search/execute` queries the
+configured OpenSearch index and returns the same v1 response envelope with
+result items carrying corpus snapshot, normalization profile, ranker profile,
+and lexical score provenance. Missing or stale retrieval indexes return a clear
+service error instead of silently falling back to mock results.
+
 ## Project Structure (Bootstrap)
 
 ```text
 src/
   api/          # HTTP routes and request/response schemas
-  services/     # request-level orchestration with dummy logic
+  services/     # request orchestration, normalization, corpus clients, retrieval
   stores/       # placeholder data-access modules (vector/graph)
   workflows/    # placeholder workflow modules
 ```
 
 ## Non-Goals In This Phase
 
-- real AI retrieval or generation
+- OpenAI embeddings
+- Qdrant semantic retrieval
+- Neo4j graph retrieval
+- online LLM answer generation
 - async job orchestration inside this service
 - model quality optimization
 - complex architecture or abstractions

@@ -6,5 +6,6 @@ This folder contains concise documentation for the AI backend bootstrap phase.
 
 - [Backend Overview](backend_overview.md)
 - [Development and Run Guide](development.md)
+- [Production Deployment](deployment.md)
 - [Testing Guide](testing.md)
 - [Bootstrap Context](bootstrap/README.md)

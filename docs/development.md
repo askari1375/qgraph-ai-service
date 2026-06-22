@@ -72,6 +72,70 @@ Live-reload behavior:
 - If Django runs on your host machine: use `http://127.0.0.1:8001`
 - If Django runs in Docker on the same Compose network: use `http://ai-backend:8001`
 
+## Search Retrieval Foundation
+
+Search execution defaults to mock mode:
+
+```env
+QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=mock
+```
+
+Use OpenSearch retrieval only after a Quran corpus snapshot has been pulled from
+Django, converted into search documents, indexed, and declared active:
+
+```env
+QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch
+QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
+QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
+QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+QGRAPH_AI_OPENSEARCH_INDEX_NAME=qgraph-ayah-lexical-v1
+QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
+QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
+```
+
+The Django corpus snapshot export expected by the AI service is:
+
+```text
+GET /api/internal/ai/corpus-snapshots/quran
+```
+
+Optional query parameters:
+
+```text
+translation_languages=en,fa
+surah_numbers=1,2
+```
+
+Required header:
+
+```text
+X-QGraph-Internal-Token: <shared-internal-token>
+```
+
+The service-side indexing path is deliberately narrow:
+
+```text
+DjangoCorpusClient -> build_search_documents -> OpenSearchLexicalBackend.index_documents
+```
+
+Documents use stable IDs:
+
+```text
+ayah:{surah_number}:{ayah_number}:ar
+ayah:{surah_number}:{ayah_number}:translation:{source_id}
+```
+
+Every document carries the corpus snapshot id/hash, document schema version,
+normalization profile id/version, surah/ayah metadata, language code, and source
+id. Arabic, Persian, and English normalization is versioned so an index can be
+rejected when it was built with stale text processing.
+
+Tests use fake adapters and do not require a running OpenSearch server. A real
+OpenSearch node is needed only for manual retrieval smoke checks or production
+retrieval mode. If `opensearch` mode is enabled and the URL, index, or active
+profile is missing or stale, `/v1/search/execute` returns a service error rather
+than mock results.
+
 ## Prepared Segmentation Artifacts
 
 The artifact endpoints read reviewed JSON files from
