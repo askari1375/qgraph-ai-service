@@ -120,6 +120,13 @@ class LexicalSearchHit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class LexicalSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: LexicalIndexProfile
+    hits: list[LexicalSearchHit]
+
+
 class OpenSearchLexicalBackend:
     def __init__(self, *, index_name: str, adapter: OpenSearchAdapter):
         self.index_name = index_name
@@ -168,6 +175,23 @@ class OpenSearchLexicalBackend:
         expected_corpus_snapshot_id: str = "",
         expected_corpus_snapshot_hash: str = "",
     ) -> list[LexicalSearchHit]:
+        return self.search_with_profile(
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            expected_corpus_snapshot_id=expected_corpus_snapshot_id,
+            expected_corpus_snapshot_hash=expected_corpus_snapshot_hash,
+        ).hits
+
+    def search_with_profile(
+        self,
+        *,
+        query: str,
+        filters: dict[str, Any],
+        top_k: int = 10,
+        expected_corpus_snapshot_id: str = "",
+        expected_corpus_snapshot_hash: str = "",
+    ) -> LexicalSearchResult:
         profile = self.get_index_profile()
         _validate_index_profile(
             profile,
@@ -190,7 +214,9 @@ class OpenSearchLexicalBackend:
             message="OpenSearch lexical search failed",
             reason="search_failed",
         )
-        return _parse_search_hits(_response_json(response))
+        return LexicalSearchResult(
+            profile=profile, hits=_parse_search_hits(_response_json(response))
+        )
 
     def get_index_profile(self) -> LexicalIndexProfile:
         response = self.adapter.get(f"/{self.index_name}")

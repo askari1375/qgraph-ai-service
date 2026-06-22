@@ -15,7 +15,7 @@ from src.services.search_jobs import (
     get_search_job_status,
 )
 from src.services.planning import build_planning_response
-from src.services.search_service import build_search_execute_response
+from src.services.search_service import SearchRetrievalError, build_search_execute_response
 
 router = APIRouter(prefix="/v1/search", tags=["search"])
 
@@ -27,7 +27,10 @@ def search_plan(payload: SearchPlanRequest) -> SearchPlanResponse:
 
 @router.post("/execute", response_model=SearchExecuteResponse)
 def search_execute(payload: SearchExecuteRequest) -> SearchExecuteResponse:
-    return build_search_execute_response(payload)
+    try:
+        return build_search_execute_response(payload)
+    except SearchRetrievalError as exc:
+        raise _search_retrieval_http_error(exc) from exc
 
 
 @router.post(
@@ -36,7 +39,10 @@ def search_execute(payload: SearchExecuteRequest) -> SearchExecuteResponse:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def search_job_create(payload: SearchJobCreateRequest) -> SearchJobCreateResponse:
-    return create_search_job(payload)
+    try:
+        return create_search_job(payload)
+    except SearchRetrievalError as exc:
+        raise _search_retrieval_http_error(exc) from exc
 
 
 @router.get("/jobs/{job_id}", response_model=SearchJobStatusResponse)
@@ -68,3 +74,15 @@ def search_job_result(job_id: str) -> SearchExecuteResponse:
             },
         )
     return lookup.result
+
+
+def _search_retrieval_http_error(exc: SearchRetrievalError) -> HTTPException:
+    detail = {
+        "message": exc.message,
+        "reason": exc.reason,
+    }
+    if exc.status_code is not None:
+        detail["backend_status_code"] = exc.status_code
+    if exc.detail:
+        detail["detail"] = exc.detail
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)

@@ -1,3 +1,6 @@
+from src.services.search_service import SearchRetrievalError
+
+
 def test_search_execute_endpoint_returns_schema_shape(client, search_execute_payload):
     response = client.post("/v1/search/execute", json=search_execute_payload)
     assert response.status_code == 200
@@ -166,3 +169,32 @@ def test_search_execute_item_ranks_are_unique_within_each_block(client, search_e
         items = block["items"]
         ranks = [item["rank"] for item in items]
         assert len(ranks) == len(set(ranks))
+
+
+def test_search_execute_retrieval_error_returns_service_error(
+    client,
+    search_execute_payload,
+    monkeypatch,
+):
+    def raise_retrieval_error(_payload):
+        raise SearchRetrievalError(
+            "OpenSearch lexical index is not available",
+            reason="index_not_found",
+            status_code=404,
+        )
+
+    monkeypatch.setattr(
+        "src.api.search.build_search_execute_response",
+        raise_retrieval_error,
+    )
+
+    response = client.post("/v1/search/execute", json=search_execute_payload)
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"] == "http_error"
+    assert payload["detail"] == {
+        "message": "OpenSearch lexical index is not available",
+        "reason": "index_not_found",
+        "backend_status_code": 404,
+    }
