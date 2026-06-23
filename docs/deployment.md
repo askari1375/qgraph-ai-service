@@ -1,5 +1,12 @@
 # Production Deployment
 
+> **Where production actually runs:** the full production system is orchestrated centrally in the
+> **`qgraph-deploy`** repo (`compose/production/`), which pulls the `ai-service` image built and
+> pushed to GHCR by this repo's CI. This document describes the service's production image and the
+> local `docker-compose.prod.yml` used for **prod-like local testing** — not the live deployment.
+> For VPS operations, see `qgraph-deploy/docs/`. The env-var reference and exposure model below remain
+> accurate and are consumed by the central stack.
+
 This guide describes the portable Docker setup for `qgraph-ai-service`. It is not specific to Lightsail, EC2, or any one VPS provider.
 
 ## What This Adds

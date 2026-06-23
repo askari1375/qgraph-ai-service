@@ -1,3 +1,8 @@
+# NOTE: This is no longer the production deployment. Production runs the
+# centralized stack in the `qgraph-deploy` repo (compose/production/), which pulls
+# the ai-service image built+pushed to GHCR by this repo's CI. This file is
+# retained for local "prod-like" testing of the AI service. See docs/deployment.md.
+
 services:
   ai-backend:
     build:
