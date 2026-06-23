@@ -40,4 +40,4 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$VPS_USER@$VPS_HOST" \
-            "/opt/qgraph/deploy.sh ai-service"
+            "/opt/qgraph/deploy/scripts/deploy.sh ai-service"
