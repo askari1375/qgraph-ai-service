@@ -127,6 +127,13 @@ QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
 QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
 ```
 
+In `opensearch` mode the active snapshot id and hash are **required**:
+`/v1/search/execute` returns a service error (`opensearch_active_snapshot_not_configured`)
+when they are unset, so the index-profile drift check can never be silently
+skipped. Re-running the indexing script with `--recreate-index` deletes and
+rebuilds the index in place (a refreshed corpus produces a new snapshot id/hash —
+copy the printed values back into the env above).
+
 The Django corpus snapshot export expected by the AI service is:
 
 ```text
@@ -164,6 +171,10 @@ Documents use stable IDs:
 ayah:{surah_number}:{ayah_number}:ar
 ayah:{surah_number}:{ayah_number}:translation:{source_id}
 ```
+
+`source_id` is the stable translation `external_id` (e.g. `en.sahih`) supplied by
+Django, never a database primary key, so document IDs and the corpus snapshot
+id/hash stay identical across reseeds and environments.
 
 Every document carries the corpus snapshot id/hash, document schema version,
 normalization profile id/version, surah/ayah metadata, language code, and source

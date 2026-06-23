@@ -1,4 +1,5 @@
 from hashlib import sha256
+from math import exp
 from typing import Any, Protocol
 
 from src.api.schemas.search import (
@@ -52,6 +53,7 @@ class LexicalSearchBackend(Protocol):
         top_k: int = 10,
         expected_corpus_snapshot_id: str = "",
         expected_corpus_snapshot_hash: str = "",
+        expected_ranker_profile_id: str = "",
     ) -> LexicalSearchResult: ...
 
 
@@ -247,6 +249,7 @@ def _build_retrieval_search_execute_response(
             top_k=top_k,
             expected_corpus_snapshot_id=settings.search_active_corpus_snapshot_id,
             expected_corpus_snapshot_hash=settings.search_active_corpus_snapshot_hash,
+            expected_ranker_profile_id=settings.search_ranker_profile_id,
         )
     except LexicalSearchBackendError as exc:
         raise SearchRetrievalError(
@@ -257,8 +260,11 @@ def _build_retrieval_search_execute_response(
         ) from exc
 
     items = _build_retrieval_items(search_result)
-    confidence = max((item.score for item in items), default=0.0)
-    profile_metadata = _profile_metadata(search_result.profile, settings)
+    confidence = _confidence_from_hits(
+        search_result.hits,
+        scale_k=settings.search_confidence_scale_k,
+    )
+    profile_metadata = _profile_metadata(search_result.profile)
     return SearchExecuteResponse(
         title=f"Search results for {request.query}",
         overall_confidence=confidence,
@@ -297,6 +303,14 @@ def _build_opensearch_backend(settings: Settings) -> OpenSearchLexicalBackend:
             "OpenSearch lexical backend is not configured",
             reason="opensearch_not_configured",
         )
+    if not settings.search_active_corpus_snapshot_id or not (
+        settings.search_active_corpus_snapshot_hash
+    ):
+        raise SearchRetrievalError(
+            "Active corpus snapshot id/hash must be configured for OpenSearch "
+            "retrieval mode so the index-profile drift check cannot be skipped",
+            reason="opensearch_active_snapshot_not_configured",
+        )
     return OpenSearchLexicalBackend(
         index_name=settings.opensearch_index_name,
         adapter=OpenSearchHTTPAdapter(
@@ -311,6 +325,19 @@ def _resolve_top_k(output_preferences: dict[str, Any]) -> int:
     if isinstance(raw_top_k, bool) or not isinstance(raw_top_k, int):
         return 10
     return max(1, min(raw_top_k, 25))
+
+
+def _confidence_from_hits(hits: list, *, scale_k: float) -> float:
+    """Map the strongest absolute lexical score to a bounded 0..1 confidence.
+
+    The per-item ``score`` is min-max normalized for relative bar heights, so it
+    is always 1.0 for the top hit and cannot express overall match quality. This
+    derives confidence from the absolute top BM25 score instead.
+    """
+    top_absolute_score = max((hit.score for hit in hits), default=0.0)
+    if top_absolute_score <= 0.0 or scale_k <= 0.0:
+        return 0.0
+    return 1.0 - exp(-top_absolute_score / scale_k)
 
 
 def _build_retrieval_items(search_result: LexicalSearchResult) -> list[SearchResultItem]:
@@ -354,14 +381,16 @@ def _build_retrieval_items(search_result: LexicalSearchResult) -> list[SearchRes
     return items
 
 
-def _profile_metadata(profile: LexicalIndexProfile, settings: Settings) -> dict[str, Any]:
+def _profile_metadata(profile: LexicalIndexProfile) -> dict[str, Any]:
     return {
         "corpus_snapshot_id": profile.corpus_snapshot_id,
         "corpus_snapshot_hash": profile.corpus_snapshot_hash,
         "document_schema_version": profile.document_schema_version,
         "normalization_profile_id": profile.normalization_profile_id,
         "normalization_profile_version": profile.normalization_profile_version,
-        "ranker_profile_id": settings.search_ranker_profile_id,
+        # Source from the index profile so block metadata agrees with item
+        # provenance; _validate_index_profile guarantees it also matches config.
+        "ranker_profile_id": profile.ranker_profile_id,
         "index_id": profile.index_id,
     }
 

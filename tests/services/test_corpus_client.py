@@ -6,7 +6,7 @@ from src.services.corpus_client import DjangoCorpusClient, DjangoCorpusClientErr
 
 def _snapshot_payload() -> dict:
     return {
-        "schema_version": "quran-corpus-snapshot.v1",
+        "schema_version": "qgraph-corpus-snapshot-v1",
         "corpus_snapshot_id": "snapshot-001",
         "corpus_snapshot_hash": "sha256:abc123",
         "produced_at": "2026-06-22T10:00:00Z",
@@ -86,6 +86,25 @@ def test_django_corpus_client_rejects_malformed_payload():
     )
     assert exc_info.value.status_code == 200
     assert exc_info.value.errors[0]["loc"] == ("corpus_snapshot_hash",)
+
+
+def test_django_corpus_client_rejects_unexpected_schema_version():
+    payload = _snapshot_payload()
+    payload["schema_version"] = "qgraph-corpus-snapshot-v2"
+
+    client = DjangoCorpusClient(
+        base_url="http://django.test",
+        internal_token="secret-token",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=payload))
+        ),
+    )
+
+    with pytest.raises(DjangoCorpusClientError) as exc_info:
+        client.fetch_quran_snapshot()
+
+    assert exc_info.value.message == ("Django corpus snapshot schema_version is not supported")
+    assert exc_info.value.errors[0]["actual"] == "qgraph-corpus-snapshot-v2"
 
 
 def test_django_corpus_client_maps_http_errors():

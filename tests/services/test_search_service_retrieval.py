@@ -40,6 +40,7 @@ class _FakeLexicalBackend:
         top_k: int = 10,
         expected_corpus_snapshot_id: str = "",
         expected_corpus_snapshot_hash: str = "",
+        expected_ranker_profile_id: str = "",
     ) -> LexicalSearchResult:
         self.calls.append(
             {
@@ -48,6 +49,7 @@ class _FakeLexicalBackend:
                 "top_k": top_k,
                 "expected_corpus_snapshot_id": expected_corpus_snapshot_id,
                 "expected_corpus_snapshot_hash": expected_corpus_snapshot_hash,
+                "expected_ranker_profile_id": expected_ranker_profile_id,
             }
         )
         if self.error is not None:
@@ -131,6 +133,7 @@ def test_search_execute_retrieval_mode_returns_django_compatible_blocks_and_item
             "top_k": 5,
             "expected_corpus_snapshot_id": "snapshot-001",
             "expected_corpus_snapshot_hash": "sha256:abc123",
+            "expected_ranker_profile_id": "lexical_bm25_v1",
         }
     ]
 
@@ -145,6 +148,42 @@ def test_search_execute_retrieval_mode_returns_django_compatible_blocks_and_item
     assert block.items[0].provenance["backend"] == "open_search"
     assert block.items[0].provenance["lexical_score"] == 7.5
     assert block.items[0].match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
+
+
+def _hit(score: float) -> LexicalSearchHit:
+    return LexicalSearchHit(
+        document_id="ayah:1:1:translation:en-sahih",
+        score=score,
+        text="In the name of Allah",
+        highlighted_text="In the name of Allah",
+        metadata={"surah_number": 1, "ayah_number": 1, "language_code": "en"},
+    )
+
+
+def test_search_execute_retrieval_confidence_reflects_absolute_score():
+    request = SearchExecuteRequest(query="mercy", filters={}, output_preferences={}, context={})
+
+    weak = build_search_execute_response(
+        request,
+        settings=_settings(),
+        lexical_backend=_FakeLexicalBackend(
+            result=LexicalSearchResult(profile=_profile(), hits=[_hit(0.5)])
+        ),
+    )
+    strong = build_search_execute_response(
+        request,
+        settings=_settings(),
+        lexical_backend=_FakeLexicalBackend(
+            result=LexicalSearchResult(profile=_profile(), hits=[_hit(40.0)])
+        ),
+    )
+
+    # Top item score stays relative (1.0) but overall confidence must reflect the
+    # absolute match strength, not always be 1.0.
+    assert weak.blocks[0].items[0].score == 1.0
+    assert 0.0 < weak.overall_confidence < 0.1
+    assert strong.overall_confidence > weak.overall_confidence
+    assert strong.overall_confidence < 1.0
 
 
 def test_search_execute_retrieval_mode_maps_missing_index_to_clear_error():
@@ -225,3 +264,22 @@ def test_search_execute_retrieval_mode_requires_configured_opensearch_url():
 
     assert exc_info.value.message == "OpenSearch lexical backend is not configured"
     assert exc_info.value.reason == "opensearch_not_configured"
+
+
+def test_search_execute_retrieval_mode_requires_active_corpus_snapshot_config():
+    with pytest.raises(SearchRetrievalError) as exc_info:
+        build_search_execute_response(
+            SearchExecuteRequest(
+                query="mercy",
+                filters={},
+                output_preferences={},
+                context={},
+            ),
+            settings=_settings(
+                opensearch_url="http://opensearch:9200",
+                search_active_corpus_snapshot_id="",
+                search_active_corpus_snapshot_hash="",
+            ),
+        )
+
+    assert exc_info.value.reason == "opensearch_active_snapshot_not_configured"

@@ -12,7 +12,7 @@ from src.services.search_normalization import (
 def _snapshot() -> QuranCorpusSnapshot:
     return QuranCorpusSnapshot.model_validate(
         {
-            "schema_version": "quran-corpus-snapshot.v1",
+            "schema_version": "qgraph-corpus-snapshot-v1",
             "corpus_snapshot_id": "snapshot-001",
             "corpus_snapshot_hash": "sha256:abc123",
             "produced_at": "2026-06-22T10:00:00Z",

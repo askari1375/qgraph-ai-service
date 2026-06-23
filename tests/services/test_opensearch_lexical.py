@@ -9,6 +9,7 @@ from src.services.opensearch_lexical import (
     OpenSearchHTTPAdapter,
     OpenSearchLexicalBackend,
     build_lexical_index_profile,
+    build_search_request,
 )
 from src.services.search_documents import build_search_documents
 
@@ -32,15 +33,21 @@ class _FakeAdapter:
         get_response: _FakeResponse | None = None,
         put_response: _FakeResponse | None = None,
         post_responses: list[_FakeResponse] | None = None,
+        delete_response: _FakeResponse | None = None,
     ):
         self.get_response = get_response or _FakeResponse()
         self.put_response = put_response or _FakeResponse()
         self.post_responses = post_responses or [_FakeResponse()]
+        self.delete_response = delete_response or _FakeResponse()
         self.calls: list[dict[str, Any]] = []
 
     def get(self, path: str) -> _FakeResponse:
         self.calls.append({"method": "GET", "path": path})
         return self.get_response
+
+    def delete(self, path: str) -> _FakeResponse:
+        self.calls.append({"method": "DELETE", "path": path})
+        return self.delete_response
 
     def put(self, path: str, *, json_payload: dict[str, Any]) -> _FakeResponse:
         self.calls.append({"method": "PUT", "path": path, "json": json_payload})
@@ -69,7 +76,7 @@ class _FakeAdapter:
 def _snapshot() -> QuranCorpusSnapshot:
     return QuranCorpusSnapshot.model_validate(
         {
-            "schema_version": "quran-corpus-snapshot.v1",
+            "schema_version": "qgraph-corpus-snapshot-v1",
             "corpus_snapshot_id": "snapshot-001",
             "corpus_snapshot_hash": "sha256:abc123",
             "produced_at": "2026-06-22T10:00:00Z",
@@ -214,6 +221,79 @@ def test_opensearch_backend_bulk_status_failure_includes_batch_context():
     assert exc_info.value.detail["first_document_id"] == "ayah:1:3:ar"
     assert exc_info.value.detail["last_document_id"] == "ayah:1:3:ar"
     assert exc_info.value.detail["byte_size"] > 0
+
+
+def test_opensearch_backend_recreate_deletes_then_creates_index():
+    documents = _documents()
+    profile = _profile()
+    adapter = _FakeAdapter(
+        delete_response=_FakeResponse(200, {"acknowledged": True}),
+        put_response=_FakeResponse(200, {"acknowledged": True}),
+        post_responses=[_FakeResponse(200, {"errors": False})],
+    )
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    backend.index_documents(documents, profile, recreate=True)
+
+    methods = [call["method"] for call in adapter.calls]
+    assert methods[0] == "DELETE"
+    assert adapter.calls[0]["path"] == f"/{INDEX_NAME}"
+    assert methods[1] == "PUT"
+
+
+def test_opensearch_backend_recreate_tolerates_missing_index():
+    adapter = _FakeAdapter(
+        delete_response=_FakeResponse(404, text="index_not_found"),
+        put_response=_FakeResponse(200, {"acknowledged": True}),
+        post_responses=[_FakeResponse(200, {"errors": False})],
+    )
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    backend.index_documents(_documents(), _profile(), recreate=True)
+
+    assert [call["method"] for call in adapter.calls][:2] == ["DELETE", "PUT"]
+
+
+def test_opensearch_backend_create_on_existing_index_surfaces_clear_error():
+    adapter = _FakeAdapter(
+        put_response=_FakeResponse(400, text="resource_already_exists_exception"),
+    )
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    with pytest.raises(LexicalSearchBackendError) as exc_info:
+        backend.index_documents(_documents(), _profile())
+
+    assert exc_info.value.reason == "index_create_failed"
+    assert exc_info.value.status_code == 400
+
+
+def test_iter_bulk_index_batches_rejects_oversized_single_document():
+    documents = _documents()
+    profile = _profile()
+    adapter = _FakeAdapter(put_response=_FakeResponse(200, {"acknowledged": True}))
+    backend = OpenSearchLexicalBackend(index_name=INDEX_NAME, adapter=adapter)
+
+    with pytest.raises(LexicalSearchBackendError) as exc_info:
+        backend.index_documents(documents, profile, bulk_batch_max_bytes=10)
+
+    assert exc_info.value.reason == "bulk_document_too_large"
+    assert exc_info.value.detail["max_bytes"] == 10
+    assert exc_info.value.detail["document_id"]
+
+
+def test_source_id_filter_preserves_case_while_languages_are_lowercased():
+    request = build_search_request(
+        query="mercy",
+        filters={"source_ids": ["EN-Sahih"], "languages": ["EN"]},
+        top_k=10,
+    )
+    filter_clauses = request["query"]["bool"]["filter"]
+    terms = {
+        next(iter(clause["terms"])): next(iter(clause["terms"].values()))
+        for clause in filter_clauses
+    }
+    assert terms["metadata.source_id"] == ["EN-Sahih"]
+    assert terms["metadata.language_code"] == ["en"]
 
 
 def test_opensearch_backend_builds_search_request_and_returns_hits():

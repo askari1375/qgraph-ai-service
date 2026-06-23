@@ -10,6 +10,8 @@ from src.config import Settings, get_settings
 
 QURAN_CORPUS_SNAPSHOT_PATH = "/api/internal/ai/corpus-snapshots/quran"
 INTERNAL_TOKEN_HEADER = "X-QGraph-Internal-Token"
+# Django producer contract (quran.services.corpus_snapshot.SCHEMA_VERSION).
+EXPECTED_CORPUS_SCHEMA_VERSION = "qgraph-corpus-snapshot-v1"
 
 
 class DjangoCorpusClientError(Exception):
@@ -83,7 +85,7 @@ class DjangoCorpusClient:
             ) from exc
 
         try:
-            return QuranCorpusSnapshot.model_validate(payload)
+            snapshot = QuranCorpusSnapshot.model_validate(payload)
         except ValidationError as exc:
             raise DjangoCorpusClientError(
                 "Django corpus snapshot response did not match the expected schema",
@@ -94,6 +96,19 @@ class DjangoCorpusClient:
                     include_url=False,
                 ),
             ) from exc
+
+        if snapshot.schema_version != EXPECTED_CORPUS_SCHEMA_VERSION:
+            raise DjangoCorpusClientError(
+                "Django corpus snapshot schema_version is not supported",
+                status_code=response.status_code,
+                errors=[
+                    {
+                        "expected": EXPECTED_CORPUS_SCHEMA_VERSION,
+                        "actual": snapshot.schema_version,
+                    }
+                ],
+            )
+        return snapshot
 
 
 def _build_snapshot_params(

@@ -51,6 +51,8 @@ class OpenSearchResponse(Protocol):
 class OpenSearchAdapter(Protocol):
     def get(self, path: str) -> OpenSearchResponse: ...
 
+    def delete(self, path: str) -> OpenSearchResponse: ...
+
     def put(self, path: str, *, json_payload: dict[str, Any]) -> OpenSearchResponse: ...
 
     def post(
@@ -76,6 +78,9 @@ class OpenSearchHTTPAdapter:
 
     def get(self, path: str) -> httpx.Response:
         return self._request("GET", path)
+
+    def delete(self, path: str) -> httpx.Response:
+        return self._request("DELETE", path)
 
     def put(self, path: str, *, json_payload: dict[str, Any]) -> httpx.Response:
         return self._request("PUT", path, json=json_payload)
@@ -185,14 +190,27 @@ class OpenSearchLexicalBackend:
         self.index_name = index_name
         self.adapter = adapter
 
+    def delete_index(self) -> None:
+        response = self.adapter.delete(f"/{self.index_name}")
+        if response.status_code == 404:
+            return
+        _raise_for_opensearch_error(
+            response,
+            message="Failed to delete OpenSearch lexical index",
+            reason="index_delete_failed",
+        )
+
     def index_documents(
         self,
         documents: list[SearchIndexDocument],
         profile: LexicalIndexProfile,
         *,
+        recreate: bool = False,
         bulk_batch_document_count: int = DEFAULT_BULK_BATCH_DOCUMENT_COUNT,
         bulk_batch_max_bytes: int = DEFAULT_BULK_BATCH_MAX_BYTES,
     ) -> None:
+        if recreate:
+            self.delete_index()
         create_response = self.adapter.put(
             f"/{self.index_name}",
             json_payload=build_opensearch_index_config(profile),
@@ -240,6 +258,7 @@ class OpenSearchLexicalBackend:
         top_k: int = 10,
         expected_corpus_snapshot_id: str = "",
         expected_corpus_snapshot_hash: str = "",
+        expected_ranker_profile_id: str = "",
     ) -> list[LexicalSearchHit]:
         return self.search_with_profile(
             query=query,
@@ -247,6 +266,7 @@ class OpenSearchLexicalBackend:
             top_k=top_k,
             expected_corpus_snapshot_id=expected_corpus_snapshot_id,
             expected_corpus_snapshot_hash=expected_corpus_snapshot_hash,
+            expected_ranker_profile_id=expected_ranker_profile_id,
         ).hits
 
     def search_with_profile(
@@ -257,12 +277,14 @@ class OpenSearchLexicalBackend:
         top_k: int = 10,
         expected_corpus_snapshot_id: str = "",
         expected_corpus_snapshot_hash: str = "",
+        expected_ranker_profile_id: str = "",
     ) -> LexicalSearchResult:
         profile = self.get_index_profile()
         _validate_index_profile(
             profile,
             expected_corpus_snapshot_id=expected_corpus_snapshot_id,
             expected_corpus_snapshot_hash=expected_corpus_snapshot_hash,
+            expected_ranker_profile_id=expected_ranker_profile_id,
         )
 
         response = self.adapter.post(
@@ -443,7 +465,6 @@ def build_search_request(
                 "text_fa": {},
                 "text_en": {},
                 "text_general": {},
-                "normalized_text": {},
             }
         },
     }
@@ -454,6 +475,7 @@ def _validate_index_profile(
     *,
     expected_corpus_snapshot_id: str,
     expected_corpus_snapshot_hash: str,
+    expected_ranker_profile_id: str = "",
 ) -> None:
     mismatches: dict[str, dict[str, str]] = {}
     expected_values = {
@@ -466,6 +488,8 @@ def _validate_index_profile(
         expected_values["corpus_snapshot_id"] = expected_corpus_snapshot_id
     if expected_corpus_snapshot_hash:
         expected_values["corpus_snapshot_hash"] = expected_corpus_snapshot_hash
+    if expected_ranker_profile_id:
+        expected_values["ranker_profile_id"] = expected_ranker_profile_id
 
     profile_values = profile.model_dump(mode="json")
     for field_name, expected_value in expected_values.items():
@@ -490,11 +514,15 @@ def _build_filter_clauses(filters: dict[str, Any]) -> list[dict[str, Any]]:
     if surah_numbers:
         clauses.append({"terms": {"metadata.surah_number": surah_numbers}})
 
-    language_codes = _coerce_string_list_filter(filters, "languages", fallback_key="language_codes")
+    language_codes = _coerce_string_list_filter(
+        filters, "languages", fallback_key="language_codes", casefold=True
+    )
     if language_codes:
         clauses.append({"terms": {"metadata.language_code": language_codes}})
 
-    source_ids = _coerce_string_list_filter(filters, "source_ids")
+    # source_id is stored verbatim (a stable external_id) on the keyword field, so
+    # the filter must preserve case to match exactly.
+    source_ids = _coerce_string_list_filter(filters, "source_ids", casefold=False)
     if source_ids:
         clauses.append({"terms": {"metadata.source_id": source_ids}})
 
@@ -532,6 +560,7 @@ def _coerce_string_list_filter(
     key: str,
     *,
     fallback_key: str | None = None,
+    casefold: bool = True,
 ) -> list[str]:
     raw_values = filters.get(key)
     if raw_values is None and fallback_key is not None:
@@ -544,7 +573,9 @@ def _coerce_string_list_filter(
     for raw_value in raw_values:
         if isinstance(raw_value, bool) or raw_value is None:
             continue
-        value = str(raw_value).strip().casefold()
+        value = str(raw_value).strip()
+        if casefold:
+            value = value.casefold()
         if not value or value in seen:
             continue
         values.append(value)
@@ -583,6 +614,17 @@ def iter_bulk_index_batches(
     for document in documents:
         document_lines = _bulk_document_lines(index_name, document)
         document_bytes = sum(len(f"{line}\n".encode("utf-8")) for line in document_lines)
+        if document_bytes > max_bytes:
+            raise LexicalSearchBackendError(
+                "A single document exceeds the OpenSearch bulk byte limit and "
+                "cannot be split into a smaller batch",
+                reason="bulk_document_too_large",
+                detail={
+                    "document_id": document.id,
+                    "document_bytes": document_bytes,
+                    "max_bytes": max_bytes,
+                },
+            )
         would_exceed_count = len(batch_documents) >= max_documents
         would_exceed_bytes = batch_documents and batch_bytes + document_bytes > max_bytes
 
@@ -684,11 +726,17 @@ def _parse_search_hits(payload: Any) -> list[LexicalSearchHit]:
     return hits
 
 
+_HIGHLIGHT_FIELD_PREFERENCE = ("text_ar", "text_fa", "text_en", "text_general")
+
+
 def _extract_highlight(raw_hit: dict[str, Any]) -> str:
     highlight = raw_hit.get("highlight")
     if not isinstance(highlight, dict):
         return ""
-    for values in highlight.values():
+    # Prefer the human-readable language fields in a stable order; never surface
+    # the normalized (punctuation-stripped/casefolded) variant.
+    for field_name in _HIGHLIGHT_FIELD_PREFERENCE:
+        values = highlight.get(field_name)
         if isinstance(values, list) and values:
             return str(values[0])
     return ""

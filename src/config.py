@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     search_active_corpus_snapshot_id: str = ""
     search_active_corpus_snapshot_hash: str = ""
     search_ranker_profile_id: str = "lexical_bm25_v1"
+    # Heuristic scale for mapping an absolute BM25 score to a 0..1 confidence via
+    # 1 - exp(-score / k). Larger k => more conservative confidence. Tune against
+    # observed lexical score distributions.
+    search_confidence_scale_k: float = 10.0
 
     django_internal_base_url: str = ""
     django_internal_token: str = ""
