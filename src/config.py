@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     opensearch_url: str = ""
     opensearch_index_name: str = "qgraph-ayah-lexical-v1"
     opensearch_timeout_seconds: float = 10.0
+    # Basic-auth credentials for a security-enabled OpenSearch. Empty username =>
+    # no auth (plain dev cluster with the security plugin disabled).
+    opensearch_username: str = ""
+    opensearch_password: str = ""
+    # TLS verification for https OpenSearch URLs. Verify by default; set a CA
+    # bundle path to verify self-signed/internal certs, or disable verification
+    # for an internal-only cluster using demo self-signed certs.
+    opensearch_verify_certs: bool = True
+    opensearch_ca_cert_path: str = ""
 
     segmentation_model_name: str = "segmentation-pipeline"
     segmentation_model_version: str = "2026-04-01"

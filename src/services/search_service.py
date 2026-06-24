@@ -16,6 +16,8 @@ from src.services.opensearch_lexical import (
     LexicalSearchResult,
     OpenSearchHTTPAdapter,
     OpenSearchLexicalBackend,
+    resolve_opensearch_auth,
+    resolve_opensearch_verify,
 )
 
 DEFAULT_SURAH_DISTRIBUTION = (1, 2, 7)
@@ -316,6 +318,12 @@ def _build_opensearch_backend(settings: Settings) -> OpenSearchLexicalBackend:
         adapter=OpenSearchHTTPAdapter(
             base_url=settings.opensearch_url,
             timeout_seconds=settings.opensearch_timeout_seconds,
+            auth=resolve_opensearch_auth(
+                settings.opensearch_username, settings.opensearch_password
+            ),
+            verify=resolve_opensearch_verify(
+                settings.opensearch_verify_certs, settings.opensearch_ca_cert_path
+            ),
         ),
     )
 

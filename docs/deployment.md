@@ -53,9 +53,13 @@ Current app settings use the `QGRAPH_AI_` prefix and have safe defaults, but pro
 | `QGRAPH_AI_DJANGO_INTERNAL_BASE_URL` | Private Django base URL for corpus snapshot pulls |
 | `QGRAPH_AI_DJANGO_INTERNAL_TOKEN` | Shared internal token sent to Django corpus export |
 | `QGRAPH_AI_DJANGO_INTERNAL_TIMEOUT_SECONDS` | Django corpus export timeout |
-| `QGRAPH_AI_OPENSEARCH_URL` | Private OpenSearch base URL for lexical retrieval |
+| `QGRAPH_AI_OPENSEARCH_URL` | Private OpenSearch base URL for lexical retrieval (`https://` against a security-enabled cluster) |
 | `QGRAPH_AI_OPENSEARCH_INDEX_NAME` | OpenSearch index name for Quran lexical documents |
 | `QGRAPH_AI_OPENSEARCH_TIMEOUT_SECONDS` | OpenSearch request timeout |
+| `QGRAPH_AI_OPENSEARCH_USERNAME` | Basic-auth user for a security-enabled cluster (empty = no auth) |
+| `QGRAPH_AI_OPENSEARCH_PASSWORD` | Basic-auth password for the above user |
+| `QGRAPH_AI_OPENSEARCH_VERIFY_CERTS` | Verify the TLS cert for `https` URLs (`true`/`false`) |
+| `QGRAPH_AI_OPENSEARCH_CA_CERT_PATH` | Optional CA bundle path to verify self-signed/internal certs |
 | `QGRAPH_AI_SEGMENTATION_MODEL_NAME` | Segmentation response model metadata |
 | `QGRAPH_AI_SEGMENTATION_MODEL_VERSION` | Segmentation response model metadata |
 | `QGRAPH_AI_SEGMENTATION_ARTIFACTS_HOST_DIR` | Host directory for prepared segmentation artifacts |
@@ -100,7 +104,11 @@ When enabling lexical retrieval, set:
 QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch
 QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
 QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
-QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+# Against a security-enabled cluster use https + credentials (see env table).
+QGRAPH_AI_OPENSEARCH_URL=https://opensearch:9200
+QGRAPH_AI_OPENSEARCH_USERNAME=admin
+QGRAPH_AI_OPENSEARCH_PASSWORD=<opensearch-admin-password>
+QGRAPH_AI_OPENSEARCH_VERIFY_CERTS=false
 QGRAPH_AI_OPENSEARCH_INDEX_NAME=qgraph-ayah-lexical-v1
 QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
 QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
