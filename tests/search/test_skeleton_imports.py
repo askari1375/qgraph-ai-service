@@ -10,7 +10,7 @@ import pytest
 
 from src.api.schemas.search import SearchExecuteRequest
 from src.search.contracts import QueryContext, SearchFilters
-from src.search.indexing import builder, cli, documents, mapping, normalization
+from src.search.indexing import builder, cli
 from src.search.pipeline import RetrievalPipeline
 from src.search.response_builder import build_execute_response
 from src.search.retrievers.lexical_opensearch import LexicalRetriever
@@ -63,13 +63,9 @@ def test_search_filters_compile_stubs_raise_not_implemented():
         SearchFilters().to_opensearch_filter()
 
 
-def test_indexing_stubs_raise_not_implemented():
-    with pytest.raises(NotImplementedError):
-        documents.build_search_documents(None)
-    with pytest.raises(NotImplementedError):
-        normalization.normalize_text("الرحمن", "ar")
-    with pytest.raises(NotImplementedError):
-        mapping.build_index_settings()
+def test_indexing_workflow_stubs_raise_not_implemented():
+    # documents / normalization / mapping are implemented; only the build/activate workflow
+    # (and the CLI that drives it) remains a stub until the activation path lands.
     with pytest.raises(NotImplementedError):
         builder.build_index()
     with pytest.raises(NotImplementedError):
