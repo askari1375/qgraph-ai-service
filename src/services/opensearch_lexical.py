@@ -65,16 +65,6 @@ class OpenSearchAdapter(Protocol):
     ) -> OpenSearchResponse: ...
 
 
-def resolve_opensearch_auth(username: str, password: str) -> tuple[str, str] | None:
-    """Basic-auth tuple for a security-enabled OpenSearch, or None when unset."""
-    return (username, password) if username else None
-
-
-def resolve_opensearch_verify(verify_certs: bool, ca_cert_path: str) -> bool | str:
-    """httpx `verify` value: a CA bundle path when provided, else the bool flag."""
-    return ca_cert_path if ca_cert_path else verify_certs
-
-
 class OpenSearchHTTPAdapter:
     def __init__(
         self,

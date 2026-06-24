@@ -21,7 +21,12 @@ services:
       - .:/app
     environment:
       PYTHONUNBUFFERED: "1"
-      QGRAPH_AI_OPENSEARCH_URL: "http://opensearch:9200"
+      # Dev OpenSearch matches production: security plugin on (https + basic auth).
+      # The self-signed dev cert is not verified for this local hop.
+      QGRAPH_AI_OPENSEARCH_URL: "https://opensearch:9200"
+      QGRAPH_AI_OPENSEARCH_USERNAME: "admin"
+      QGRAPH_AI_OPENSEARCH_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DevAdmin123!}"
+      QGRAPH_AI_OPENSEARCH_VERIFY_CERTS: "false"
     healthcheck:
       test:
         [
@@ -36,23 +41,29 @@ services:
       start_period: 5s
 
   opensearch:
-    image: ${QGRAPH_OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.11.1}
+    # Mirrors production: security plugin enabled (TLS + auth), 2.12+ image with
+    # the admin user bootstrapped from a password. Dev default is non-secret.
+    image: ${QGRAPH_OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.17.1}
     profiles:
       - search
     environment:
       discovery.type: single-node
-      plugins.security.disabled: "true"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DevAdmin123!}"
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "127.0.0.1:9200:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -ksS -u \"admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://127.0.0.1:9200 >/dev/null || exit 1",
+        ]
       interval: 15s
       timeout: 5s
       retries: 20
-      start_period: 30s
+      start_period: 60s
 
 volumes:
   opensearch-data:

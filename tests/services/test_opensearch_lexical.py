@@ -10,8 +10,6 @@ from src.services.opensearch_lexical import (
     OpenSearchLexicalBackend,
     build_lexical_index_profile,
     build_search_request,
-    resolve_opensearch_auth,
-    resolve_opensearch_verify,
 )
 from src.services.search_documents import build_search_documents
 
@@ -398,16 +396,3 @@ def test_opensearch_http_adapter_maps_connection_errors_to_clear_error():
     assert exc_info.value.detail["base_url"] == "http://127.0.0.1:9200"
     assert exc_info.value.detail["error_type"] == "ConnectError"
     assert "Connection refused" in exc_info.value.detail["error"]
-
-
-def test_resolve_opensearch_auth_returns_tuple_only_when_username_set():
-    assert resolve_opensearch_auth("svc", "secret") == ("svc", "secret")
-    assert resolve_opensearch_auth("", "secret") is None
-    assert resolve_opensearch_auth("", "") is None
-
-
-def test_resolve_opensearch_verify_prefers_ca_path_then_falls_back_to_flag():
-    assert resolve_opensearch_verify(True, "/etc/ssl/ca.pem") == "/etc/ssl/ca.pem"
-    assert resolve_opensearch_verify(False, "/etc/ssl/ca.pem") == "/etc/ssl/ca.pem"
-    assert resolve_opensearch_verify(True, "") is True
-    assert resolve_opensearch_verify(False, "") is False
