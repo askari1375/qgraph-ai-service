@@ -1,40 +1,26 @@
 # Production Deployment
 
-> **Where production actually runs:** the full production system is orchestrated centrally in the
+> **Where production runs:** the full production system is orchestrated centrally in the
 > **`qgraph-deploy`** repo (`compose/production/`), which pulls the `ai-service` image built and
-> pushed to GHCR by this repo's CI. This document describes the service's production image and the
-> local `docker-compose.prod.yml` used for **prod-like local testing** — not the live deployment.
-> For VPS operations, see `qgraph-deploy/docs/`. The env-var reference and exposure model below remain
-> accurate and are consumed by the central stack.
+> pushed to GHCR by this repo's CI. For VPS operations see `qgraph-deploy/docs/`. This document is the
+> service-level reference: the production image, its environment contract, exposure model, and health
+> check — all consumed by the central stack.
 
-This guide describes the portable Docker setup for `qgraph-ai-service`. It is not specific to Lightsail, EC2, or any one VPS provider.
+## Production Image
 
-## What This Adds
+- Based on `python:3.12-slim-bookworm`, pinned `uv` (`0.11.15`), prod deps from `uv.lock`
+- Non-root runtime user, container port `8001`
+- Dockerfile healthcheck on `GET /health`
+- Reads prepared segmentation artifacts from a read-only mount (provided by the deploying stack)
 
-- A production Docker image based on `python:3.12-slim-bookworm`
-- Pinned `uv` install: `0.11.15`
-- Production dependencies from `uv.lock`
-- Non-root runtime user
-- Container port `8001`
-- Dockerfile and Compose healthchecks for `GET /health`
-- Production Compose without reload
-- Read-only production bind mount for prepared segmentation artifacts
-- Shared external Docker network for private Django-to-FastAPI calls
-- Host port pinned to `127.0.0.1` for VPS-local smoke checks only
+The `docker-compose.yml` in this repo is the local development workflow (bind mounts, Uvicorn reload,
+and a local security-enabled OpenSearch under the `search` profile).
 
-The existing `docker-compose.yml` remains the local development workflow with bind mounts and Uvicorn reload.
+## Environment Contract
 
-## Environment File
-
-Create a host-specific env file from the committed example:
-
-```bash
-cp .env.example .env.prod
-```
-
-Review `.env.prod` before deploying. Do not commit it.
-
-Current app settings use the `QGRAPH_AI_` prefix and have safe defaults, but production should still set these values explicitly:
+The service reads `QGRAPH_AI_`-prefixed settings. In production the central stack
+(`qgraph-deploy`) supplies them via its `env/ai-service.env`; for local dev, copy
+`.env.example` to `.env`. Production should set these explicitly:
 
 | Variable | Purpose |
 | --- | --- |
@@ -133,44 +119,7 @@ does not silently fall back to mock results.
 docker build -t qgraph-ai-service:prod .
 ```
 
-The Dockerfile copies `pyproject.toml` and `uv.lock` before source code so dependency layers stay cached when only application code changes.
-
-## Run With Production Compose
-
-Validate the Compose file:
-
-```bash
-docker network inspect qgraph-private >/dev/null 2>&1 || docker network create qgraph-private
-docker compose --env-file .env.prod -f docker-compose.prod.yml config
-```
-
-Build and start:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-```
-
-Production services use `restart: unless-stopped`. Docker restarts them after a VPS/EC2 reboot or transient container crash; if you manually stop a container, it stays stopped until you start it again.
-
-Check health:
-
-```bash
-curl http://127.0.0.1:8001/health
-```
-
-View logs:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f ai-backend
-```
-
-Stop:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml down
-```
-
-If you change `QGRAPH_AI_HOST_PORT`, adjust the healthcheck URL you run from the host.
+The Dockerfile copies `pyproject.toml` and `uv.lock` before source code so dependency layers stay cached when only application code changes. CI builds and pushes this image to GHCR; the central `qgraph-deploy` stack runs it (with `restart: unless-stopped`, the read-only artifacts mount, and a `127.0.0.1:8001` smoke-check port).
 
 ## Exposure Model
 
@@ -182,16 +131,11 @@ Frontend -> Django backend -> Docker private network -> ai-backend:8001
 
 Django remains responsible for authentication, authorization, subscription checks, rate limits, and deciding which AI behavior/model should be used.
 
-The production Compose file attaches the `ai-backend` service to the external
-`${QGRAPH_PRIVATE_DOCKER_NETWORK:-qgraph-private}` network with the
-`ai-backend` DNS alias. Django and Celery should use
-`AI_BACKEND_URL=http://ai-backend:8001`.
-
-The production Compose file also publishes
-`127.0.0.1:${QGRAPH_AI_HOST_PORT:-8001}:8001` on the VPS for host-only smoke
-checks. The Uvicorn process still listens on `0.0.0.0` inside the container so
-Docker can route traffic to it, but Docker exposes that port only on host
-loopback.
+The central stack attaches `ai-backend` to the private `qgraph-private` network
+(DNS name `ai-backend`); Django and Celery reach it at
+`AI_BACKEND_URL=http://ai-backend:8001`. The service is also published on
+`127.0.0.1:8001` for host-only smoke checks. Uvicorn listens on `0.0.0.0` inside
+the container, but the host port is bound to loopback only.
 
 Do not configure public DNS or a public reverse proxy route such as `ai.qgraph.org` to this service. If `ai.qgraph.org` currently points at the VPS or proxies to port `8001`, remove that route or make it return a closed/default response. Public HTTPS should terminate at Django, not at this FastAPI container.
 
@@ -236,43 +180,8 @@ Run one Uvicorn worker for now. The production command relies on Uvicorn's defau
 
 Search jobs currently live in process memory in `src/services/search_jobs.py`. Increasing Uvicorn workers, running multiple containers, or scaling replicas would split that state across processes. Before scaling horizontally or increasing workers, move search job state to Redis, a database, or another durable shared store.
 
-## Local vs Production
+## Deploying
 
-| Workflow | File | Behavior |
-| --- | --- | --- |
-| Development | `docker-compose.yml` | Bind-mounts the repo and runs Uvicorn with reload |
-| Production | `docker-compose.prod.yml` | Builds an immutable image, no bind mounts, no reload, restart policy enabled |
-
-Instant code updates through bind mounts are a development feature. Production changes should be deployed by rebuilding the image and restarting the service.
-
-## VPS Commands
-
-From the repository directory on the server:
-
-```bash
-cp .env.example .env.prod
-```
-
-Edit `.env.prod`, then run:
-
-```bash
-docker network inspect qgraph-private >/dev/null 2>&1 || docker network create qgraph-private
-docker compose --env-file .env.prod -f docker-compose.prod.yml config
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-curl http://127.0.0.1:8001/health
-```
-
-After the backend stack is deployed, verify Docker DNS from backend containers:
-
-```bash
-cd /opt/qgraph/backend
-QGRAPH_ENV_FILE=.env.prod docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml exec web python -c "import urllib.request; print(urllib.request.urlopen('http://ai-backend:8001/health', timeout=3).status)"
-QGRAPH_ENV_FILE=.env.prod docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml exec celery-worker python -c "import urllib.request; print(urllib.request.urlopen('http://ai-backend:8001/health', timeout=3).status)"
-```
-
-To deploy later code changes:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-docker compose --env-file .env.prod -f docker-compose.prod.yml ps
-```
+Production is deployed by the central `qgraph-deploy` stack (CI builds the image →
+GHCR → `deploy.sh ai-service` pulls and recreates it). See `qgraph-deploy/docs/`.
+Local development uses `docker-compose.yml` (bind mounts + Uvicorn reload).
