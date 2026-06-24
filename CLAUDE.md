@@ -56,6 +56,15 @@ Pre-commit hooks run `ruff check --fix` and `ruff format` automatically on commi
 - The API layer must stay thin — orchestration belongs in services, not route handlers.
 - Stores and workflows are first-class root modules, not sub-components of the API.
 
+## Assistant scratch space (`.ai/`)
+
+`.ai/` is local-only and gitignored — personal drafts, proposals, and phased implementation plans
+(e.g. "Phase A/B", decision ids like "D3") live there and are not authoritative documentation. Never
+reference `.ai/` files, paths, or contents from anything that ships with the repo: source code and
+comments, docstrings, `NotImplementedError`/exception messages, `docs/`, READMEs, or commit/PR
+messages. Carry the *substance* of a decision into the code on its own terms; leave the planning
+vocabulary behind.
+
 ## Testing approach
 
 Tests verify endpoint wiring and schema shape, not AI quality. Key patterns:
