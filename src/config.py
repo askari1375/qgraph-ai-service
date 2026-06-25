@@ -21,9 +21,7 @@ class Settings(BaseSettings):
 
     search_backend_name: str = "qgraph-ai-search"
     search_backend_version: str = "2026-04-01"
-    search_lexical_backend_mode: str = "mock"
     search_corpus_snapshot_cache_dir: Path = Path("data/corpus_snapshots")
-    search_ranker_profile_id: str = "lexical_bm25_v1"
     # Heuristic scale for mapping an absolute BM25 score to a 0..1 confidence via
     # 1 - exp(-score / k). Larger k => more conservative confidence. Tune against
     # observed lexical score distributions.

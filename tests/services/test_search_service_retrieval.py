@@ -14,10 +14,7 @@ from src.services.search_service import SearchRetrievalError, build_search_execu
 
 
 def _settings(**overrides: Any) -> Settings:
-    values: dict[str, Any] = {
-        "search_lexical_backend_mode": "opensearch",
-        "opensearch_url": "http://opensearch:9200",
-    }
+    values: dict[str, Any] = {"opensearch_url": "http://opensearch:9200"}
     values.update(overrides)
     return Settings(**values)
 
@@ -96,7 +93,7 @@ def _hit(score: float) -> dict[str, Any]:
     }
 
 
-def test_retrieval_mode_returns_django_compatible_blocks_and_items():
+def test_retrieval_mode_returns_renderable_markdown_block():
     response = build_search_execute_response(
         SearchExecuteRequest(
             query="mercy", filters={"surahs": [1]}, output_preferences={"top_k": 5}
@@ -106,24 +103,17 @@ def test_retrieval_mode_returns_django_compatible_blocks_and_items():
     )
 
     assert response.render_schema_version == "v1"
-    assert response.metadata["mock"] is False
     assert response.metadata["backend"] == "open_search"
     assert response.metadata["corpus_snapshot_id"] == "snapshot-001"
     assert response.metadata["analysis_profile_version"] == ANALYSIS_PROFILE_VERSION
 
     block = response.blocks[0]
-    assert block.block_type == "results"
-    assert block.payload == {"query": "mercy", "result_count": 1, "top_k": 5}
-    item = block.items[0]
-    assert item.rank == 1
-    assert item.result_type == "ayah"
-    assert item.score == 1.0
-    assert item.title == "Surah 1, Ayah 1"
-    assert item.provenance["backend"] == "open_search"
-    assert item.provenance["lexical_score"] == 7.5
-    assert item.match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
-    assert item.match_metadata["canonical_content_id"] == "ayah:1:1"
-    assert item.match_metadata["content_type"] == "translation"
+    assert block.block_type == "markdown"
+    assert block.items == []
+    content = block.payload["content"]
+    assert "Surah 1, Ayah 1" in content
+    assert "Sahih International" in content
+    assert "<mark>" not in content
 
 
 def test_retrieval_confidence_reflects_absolute_score():
@@ -134,7 +124,6 @@ def test_retrieval_confidence_reflects_absolute_score():
     strong = build_search_execute_response(
         request, settings=_settings(), adapter=_FakeAdapter(hits=[_hit(40.0)])
     )
-    assert weak.blocks[0].items[0].score == 1.0
     assert 0.0 < weak.overall_confidence < 0.1
     assert weak.overall_confidence < strong.overall_confidence < 1.0
 
@@ -143,8 +132,10 @@ def test_retrieval_empty_results_warns():
     response = build_search_execute_response(
         SearchExecuteRequest(query="zzz"), settings=_settings(), adapter=_FakeAdapter(hits=[])
     )
-    assert response.blocks[0].items == []
-    assert response.blocks[0].warning_text == "No lexical matches were returned."
+    block = response.blocks[0]
+    assert block.block_type == "markdown"
+    assert block.items == []
+    assert block.warning_text == "No lexical matches were returned."
 
 
 def test_retrieval_maps_missing_index_to_clear_error():
