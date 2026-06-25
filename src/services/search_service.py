@@ -1,22 +1,23 @@
 from hashlib import sha256
 from math import exp
-from typing import Any, Protocol
+from typing import Any
 
 from src.api.schemas.search import (
     SearchExecuteRequest,
     SearchExecuteResponse,
-    SearchResultItem,
     SearchResponseBlock,
+    SearchResultItem,
 )
 from src.config import Settings, get_settings
-from src.search.opensearch_client import OpenSearchHTTPAdapter
-from src.services.opensearch_lexical import (
-    OPEN_SEARCH_BACKEND_NAME,
-    LexicalIndexProfile,
-    LexicalSearchBackendError,
-    LexicalSearchResult,
-    OpenSearchLexicalBackend,
+from src.search.contracts import ContentType, QueryContext, RetrievalCandidate, SearchFilters
+from src.search.opensearch_client import (
+    OpenSearchAdapter,
+    OpenSearchError,
+    build_opensearch_adapter,
+    read_index_profile,
 )
+from src.search.pipeline import RetrievalPipeline
+from src.search.retrievers.lexical_opensearch import LexicalRetriever
 
 DEFAULT_SURAH_DISTRIBUTION = (1, 2, 7)
 MOCK_SURAH_VALUES = {
@@ -26,6 +27,7 @@ MOCK_SURAH_VALUES = {
 }
 RETRIEVAL_BACKEND_MODE = "opensearch"
 MOCK_BACKEND_MODE = "mock"
+OPEN_SEARCH_BACKEND_NAME = "open_search"
 
 
 class SearchRetrievalError(Exception):
@@ -44,17 +46,191 @@ class SearchRetrievalError(Exception):
         self.detail = detail or {}
 
 
-class LexicalSearchBackend(Protocol):
-    def search_with_profile(
-        self,
-        *,
-        query: str,
-        filters: dict[str, Any],
-        top_k: int = 10,
-        expected_corpus_snapshot_id: str = "",
-        expected_corpus_snapshot_hash: str = "",
-        expected_ranker_profile_id: str = "",
-    ) -> LexicalSearchResult: ...
+def build_search_execute_response(
+    request: SearchExecuteRequest,
+    settings: Settings | None = None,
+    adapter: OpenSearchAdapter | None = None,
+) -> SearchExecuteResponse:
+    cfg = settings if settings is not None else get_settings()
+    mode = cfg.search_lexical_backend_mode.casefold()
+    if mode == RETRIEVAL_BACKEND_MODE:
+        return _build_retrieval_response(request, settings=cfg, adapter=adapter)
+    if mode != MOCK_BACKEND_MODE:
+        raise SearchRetrievalError(
+            "Unsupported search lexical backend mode",
+            reason="unsupported_backend_mode",
+            detail={"mode": cfg.search_lexical_backend_mode},
+        )
+
+    return _build_mock_search_execute_response(request, settings=cfg)
+
+
+# --------------------------------------------------------------------------------------------------
+# OpenSearch retrieval path
+# --------------------------------------------------------------------------------------------------
+
+
+def _build_retrieval_response(
+    request: SearchExecuteRequest,
+    *,
+    settings: Settings,
+    adapter: OpenSearchAdapter | None,
+) -> SearchExecuteResponse:
+    top_k = _resolve_top_k(request.output_preferences)
+    query_context = QueryContext(
+        raw_query=request.query,
+        filters=SearchFilters.from_request_filters(request.filters),
+        top_k=top_k,
+        collapse=True,
+    )
+    alias = settings.opensearch_alias
+    try:
+        active_adapter = adapter if adapter is not None else _build_adapter(settings)
+        candidates = RetrievalPipeline([LexicalRetriever(active_adapter, alias)]).run(query_context)
+        profile = read_index_profile(active_adapter, alias)
+    except OpenSearchError as exc:
+        raise SearchRetrievalError(
+            exc.message,
+            reason=exc.reason,
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
+
+    items = _build_retrieval_items(candidates, profile)
+    confidence = _confidence_from_candidates(candidates, scale_k=settings.search_confidence_scale_k)
+    provenance = _profile_provenance(profile)
+    return SearchExecuteResponse(
+        title=f"Search results for {request.query}",
+        overall_confidence=confidence,
+        render_schema_version=settings.render_schema_version,
+        metadata={"mock": False, "backend": OPEN_SEARCH_BACKEND_NAME, **provenance},
+        blocks=[
+            SearchResponseBlock(
+                order=0,
+                block_type="results",
+                title="Lexical matches",
+                payload={
+                    "query": request.query,
+                    "result_count": len(items),
+                    "top_k": top_k,
+                },
+                explanation="OpenSearch BM25 lexical retrieval over Quran corpus documents.",
+                confidence=confidence,
+                provenance={"backend": OPEN_SEARCH_BACKEND_NAME, **provenance},
+                warning_text="" if items else "No lexical matches were returned.",
+                items=items,
+            )
+        ],
+    )
+
+
+def _build_adapter(settings: Settings) -> OpenSearchAdapter:
+    return build_opensearch_adapter(
+        url=settings.opensearch_url,
+        timeout_seconds=settings.opensearch_timeout_seconds,
+        username=settings.opensearch_username,
+        password=settings.opensearch_password,
+        verify=settings.opensearch_ca_cert_path or settings.opensearch_verify_certs,
+    )
+
+
+def _build_retrieval_items(
+    candidates: list[RetrievalCandidate], profile: dict[str, Any]
+) -> list[SearchResultItem]:
+    max_score = max((candidate.score for candidate in candidates), default=0.0)
+    snapshot_provenance = _profile_provenance(profile)
+    items: list[SearchResultItem] = []
+    for candidate in candidates:
+        # Min-max normalize for relative bar heights; overall confidence carries absolute strength.
+        score = 0.0 if max_score <= 0 else min(candidate.score / max_score, 1.0)
+        metadata = candidate.metadata
+        items.append(
+            SearchResultItem(
+                rank=candidate.rank,
+                result_type=_result_type(candidate.content_type),
+                score=score,
+                title=_build_result_title(metadata),
+                snippet_text=_snippet(candidate.text),
+                highlighted_text=candidate.highlighted_text or _snippet(candidate.text),
+                match_metadata={
+                    "document_id": candidate.document_id,
+                    "canonical_content_id": candidate.canonical_content_id,
+                    "content_type": candidate.content_type.value,
+                    "surah_number": metadata.get("surah_number"),
+                    "ayah_number": metadata.get("ayah_number"),
+                    "ayah_global_number": metadata.get("ayah_global_number"),
+                    "language_code": metadata.get("language_code"),
+                    "source_id": metadata.get("source_id"),
+                    "source_name": metadata.get("source_name"),
+                },
+                explanation="Ranked by OpenSearch lexical score.",
+                provenance={
+                    "backend": OPEN_SEARCH_BACKEND_NAME,
+                    "document_id": candidate.document_id,
+                    "lexical_score": candidate.score,
+                    **snapshot_provenance,
+                },
+            )
+        )
+    return items
+
+
+def _result_type(content_type: ContentType) -> str:
+    return "surah" if content_type is ContentType.SURAH_NAME else "ayah"
+
+
+def _profile_provenance(profile: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "corpus_snapshot_id",
+        "corpus_snapshot_hash",
+        "document_schema_version",
+        "normalization_profile_id",
+        "normalization_profile_version",
+        "analysis_profile_version",
+        "index_id",
+    )
+    return {key: profile.get(key) for key in keys}
+
+
+def _confidence_from_candidates(candidates: list[RetrievalCandidate], *, scale_k: float) -> float:
+    """Map the strongest absolute lexical score to a bounded 0..1 confidence.
+
+    Per-item ``score`` is min-max normalized for relative bar heights, so this derives overall
+    confidence from the absolute top score instead.
+    """
+    top_absolute_score = max((candidate.score for candidate in candidates), default=0.0)
+    if top_absolute_score <= 0.0 or scale_k <= 0.0:
+        return 0.0
+    return 1.0 - exp(-top_absolute_score / scale_k)
+
+
+def _resolve_top_k(output_preferences: dict[str, Any]) -> int:
+    raw_top_k = output_preferences.get("top_k")
+    if isinstance(raw_top_k, bool) or not isinstance(raw_top_k, int):
+        return 10
+    return max(1, min(raw_top_k, 25))
+
+
+def _build_result_title(metadata: dict[str, Any]) -> str:
+    surah_number = metadata.get("surah_number")
+    ayah_number = metadata.get("ayah_number")
+    if surah_number and ayah_number:
+        return f"Surah {surah_number}, Ayah {ayah_number}"
+    if surah_number:
+        return f"Surah {surah_number}"
+    return "Quran corpus match"
+
+
+def _snippet(text: str, max_length: int = 240) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= max_length:
+        return cleaned
+    return f"{cleaned[: max_length - 1].rstrip()}..."
+
+
+# --------------------------------------------------------------------------------------------------
+# Mock path (kept until the runtime mock is removed)
+# --------------------------------------------------------------------------------------------------
 
 
 def _coerce_surah_ids(filters: dict) -> list[int]:
@@ -151,29 +327,6 @@ def _build_markdown_block(order: int) -> SearchResponseBlock:
     )
 
 
-def build_search_execute_response(
-    request: SearchExecuteRequest,
-    settings: Settings | None = None,
-    lexical_backend: LexicalSearchBackend | None = None,
-) -> SearchExecuteResponse:
-    cfg = settings if settings is not None else get_settings()
-    mode = cfg.search_lexical_backend_mode.casefold()
-    if mode == RETRIEVAL_BACKEND_MODE:
-        return _build_retrieval_search_execute_response(
-            request,
-            settings=cfg,
-            lexical_backend=lexical_backend,
-        )
-    if mode != MOCK_BACKEND_MODE:
-        raise SearchRetrievalError(
-            "Unsupported search lexical backend mode",
-            reason="unsupported_backend_mode",
-            detail={"mode": cfg.search_lexical_backend_mode},
-        )
-
-    return _build_mock_search_execute_response(request, settings=cfg)
-
-
 def _build_mock_search_execute_response(
     request: SearchExecuteRequest,
     settings: Settings,
@@ -230,183 +383,3 @@ def _build_mock_search_execute_response(
         metadata={"mock": True},
         blocks=blocks,
     )
-
-
-def _build_retrieval_search_execute_response(
-    request: SearchExecuteRequest,
-    *,
-    settings: Settings,
-    lexical_backend: LexicalSearchBackend | None,
-) -> SearchExecuteResponse:
-    backend = (
-        lexical_backend if lexical_backend is not None else _build_opensearch_backend(settings)
-    )
-    top_k = _resolve_top_k(request.output_preferences)
-    try:
-        search_result = backend.search_with_profile(
-            query=request.query,
-            filters=request.filters,
-            top_k=top_k,
-            expected_corpus_snapshot_id=settings.search_active_corpus_snapshot_id,
-            expected_corpus_snapshot_hash=settings.search_active_corpus_snapshot_hash,
-            expected_ranker_profile_id=settings.search_ranker_profile_id,
-        )
-    except LexicalSearchBackendError as exc:
-        raise SearchRetrievalError(
-            exc.message,
-            reason=exc.reason,
-            status_code=exc.status_code,
-            detail=exc.detail,
-        ) from exc
-
-    items = _build_retrieval_items(search_result)
-    confidence = _confidence_from_hits(
-        search_result.hits,
-        scale_k=settings.search_confidence_scale_k,
-    )
-    profile_metadata = _profile_metadata(search_result.profile)
-    return SearchExecuteResponse(
-        title=f"Search results for {request.query}",
-        overall_confidence=confidence,
-        render_schema_version=settings.render_schema_version,
-        metadata={
-            "mock": False,
-            "backend": OPEN_SEARCH_BACKEND_NAME,
-            **profile_metadata,
-        },
-        blocks=[
-            SearchResponseBlock(
-                order=0,
-                block_type="results",
-                title="Lexical matches",
-                payload={
-                    "query": request.query,
-                    "result_count": len(items),
-                    "top_k": top_k,
-                },
-                explanation="OpenSearch BM25 lexical retrieval over Quran corpus documents.",
-                confidence=confidence,
-                provenance={
-                    "backend": OPEN_SEARCH_BACKEND_NAME,
-                    **profile_metadata,
-                },
-                warning_text="" if items else "No lexical matches were returned.",
-                items=items,
-            )
-        ],
-    )
-
-
-def _build_opensearch_backend(settings: Settings) -> OpenSearchLexicalBackend:
-    if not settings.opensearch_url:
-        raise SearchRetrievalError(
-            "OpenSearch lexical backend is not configured",
-            reason="opensearch_not_configured",
-        )
-    if not settings.search_active_corpus_snapshot_id or not (
-        settings.search_active_corpus_snapshot_hash
-    ):
-        raise SearchRetrievalError(
-            "Active corpus snapshot id/hash must be configured for OpenSearch "
-            "retrieval mode so the index-profile drift check cannot be skipped",
-            reason="opensearch_active_snapshot_not_configured",
-        )
-    return OpenSearchLexicalBackend(
-        index_name=settings.opensearch_index_name,
-        adapter=OpenSearchHTTPAdapter(
-            base_url=settings.opensearch_url,
-            timeout_seconds=settings.opensearch_timeout_seconds,
-            auth=(settings.opensearch_username, settings.opensearch_password),
-            verify=settings.opensearch_ca_cert_path or settings.opensearch_verify_certs,
-        ),
-    )
-
-
-def _resolve_top_k(output_preferences: dict[str, Any]) -> int:
-    raw_top_k = output_preferences.get("top_k")
-    if isinstance(raw_top_k, bool) or not isinstance(raw_top_k, int):
-        return 10
-    return max(1, min(raw_top_k, 25))
-
-
-def _confidence_from_hits(hits: list, *, scale_k: float) -> float:
-    """Map the strongest absolute lexical score to a bounded 0..1 confidence.
-
-    The per-item ``score`` is min-max normalized for relative bar heights, so it
-    is always 1.0 for the top hit and cannot express overall match quality. This
-    derives confidence from the absolute top BM25 score instead.
-    """
-    top_absolute_score = max((hit.score for hit in hits), default=0.0)
-    if top_absolute_score <= 0.0 or scale_k <= 0.0:
-        return 0.0
-    return 1.0 - exp(-top_absolute_score / scale_k)
-
-
-def _build_retrieval_items(search_result: LexicalSearchResult) -> list[SearchResultItem]:
-    max_score = max((hit.score for hit in search_result.hits), default=0.0)
-    items: list[SearchResultItem] = []
-    for index, hit in enumerate(search_result.hits, start=1):
-        metadata = hit.metadata
-        lexical_score = hit.score
-        score = 0.0 if max_score <= 0 else min(lexical_score / max_score, 1.0)
-        item_provenance = {
-            "backend": OPEN_SEARCH_BACKEND_NAME,
-            "document_id": hit.document_id,
-            "lexical_score": lexical_score,
-            "corpus_snapshot_id": search_result.profile.corpus_snapshot_id,
-            "corpus_snapshot_hash": search_result.profile.corpus_snapshot_hash,
-            "normalization_profile_id": search_result.profile.normalization_profile_id,
-            "normalization_profile_version": search_result.profile.normalization_profile_version,
-            "ranker_profile_id": search_result.profile.ranker_profile_id,
-        }
-        items.append(
-            SearchResultItem(
-                rank=index,
-                result_type="ayah",
-                score=score,
-                title=_build_result_title(metadata),
-                snippet_text=_snippet(hit.text),
-                highlighted_text=hit.highlighted_text or _snippet(hit.text),
-                match_metadata={
-                    "document_id": hit.document_id,
-                    "surah_number": metadata.get("surah_number"),
-                    "ayah_number": metadata.get("ayah_number"),
-                    "ayah_global_number": metadata.get("ayah_global_number"),
-                    "language_code": metadata.get("language_code"),
-                    "source_id": metadata.get("source_id"),
-                    "source_name": metadata.get("source_name"),
-                },
-                explanation="Ranked by OpenSearch lexical score.",
-                provenance=item_provenance,
-            )
-        )
-    return items
-
-
-def _profile_metadata(profile: LexicalIndexProfile) -> dict[str, Any]:
-    return {
-        "corpus_snapshot_id": profile.corpus_snapshot_id,
-        "corpus_snapshot_hash": profile.corpus_snapshot_hash,
-        "document_schema_version": profile.document_schema_version,
-        "normalization_profile_id": profile.normalization_profile_id,
-        "normalization_profile_version": profile.normalization_profile_version,
-        # Source from the index profile so block metadata agrees with item
-        # provenance; _validate_index_profile guarantees it also matches config.
-        "ranker_profile_id": profile.ranker_profile_id,
-        "index_id": profile.index_id,
-    }
-
-
-def _build_result_title(metadata: dict[str, Any]) -> str:
-    surah_number = metadata.get("surah_number")
-    ayah_number = metadata.get("ayah_number")
-    if surah_number and ayah_number:
-        return f"Surah {surah_number}, Ayah {ayah_number}"
-    return "Quran corpus match"
-
-
-def _snippet(text: str, max_length: int = 240) -> str:
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= max_length:
-        return cleaned
-    return f"{cleaned[: max_length - 1].rstrip()}..."

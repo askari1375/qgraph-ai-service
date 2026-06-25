@@ -1,285 +1,177 @@
-from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
 from src.api.schemas.search import SearchExecuteRequest
 from src.config import Settings
-from src.services.opensearch_lexical import (
-    LEXICAL_INDEX_PROFILE_SCHEMA_VERSION,
-    OPEN_SEARCH_BACKEND_NAME,
-    LexicalIndexProfile,
-    LexicalSearchBackendError,
-    LexicalSearchHit,
-    LexicalSearchResult,
-)
-from src.services.search_documents import DOCUMENT_SCHEMA_VERSION
-from src.services.search_normalization import (
+from src.search.indexing.documents import DOCUMENT_SCHEMA_VERSION
+from src.search.indexing.mapping import ANALYSIS_PROFILE_VERSION
+from src.search.indexing.normalization import (
     NORMALIZATION_PROFILE_ID,
     NORMALIZATION_PROFILE_VERSION,
 )
 from src.services.search_service import SearchRetrievalError, build_search_execute_response
 
 
-class _FakeLexicalBackend:
-    def __init__(
-        self,
-        *,
-        result: LexicalSearchResult | None = None,
-        error: LexicalSearchBackendError | None = None,
-    ):
-        self.result = result
-        self.error = error
-        self.calls: list[dict[str, Any]] = []
-
-    def search_with_profile(
-        self,
-        *,
-        query: str,
-        filters: dict[str, Any],
-        top_k: int = 10,
-        expected_corpus_snapshot_id: str = "",
-        expected_corpus_snapshot_hash: str = "",
-        expected_ranker_profile_id: str = "",
-    ) -> LexicalSearchResult:
-        self.calls.append(
-            {
-                "query": query,
-                "filters": filters,
-                "top_k": top_k,
-                "expected_corpus_snapshot_id": expected_corpus_snapshot_id,
-                "expected_corpus_snapshot_hash": expected_corpus_snapshot_hash,
-                "expected_ranker_profile_id": expected_ranker_profile_id,
-            }
-        )
-        if self.error is not None:
-            raise self.error
-        assert self.result is not None
-        return self.result
-
-
-def _settings(**overrides) -> Settings:
-    values = {
+def _settings(**overrides: Any) -> Settings:
+    values: dict[str, Any] = {
         "search_lexical_backend_mode": "opensearch",
-        "search_active_corpus_snapshot_id": "snapshot-001",
-        "search_active_corpus_snapshot_hash": "sha256:abc123",
-        "search_ranker_profile_id": "lexical_bm25_v1",
+        "opensearch_url": "http://opensearch:9200",
     }
     values.update(overrides)
     return Settings(**values)
 
 
-def _profile() -> LexicalIndexProfile:
-    return LexicalIndexProfile(
-        index_id="qgraph-ayah-lexical-v1",
-        schema_version=LEXICAL_INDEX_PROFILE_SCHEMA_VERSION,
-        backend=OPEN_SEARCH_BACKEND_NAME,
-        corpus_snapshot_id="snapshot-001",
-        corpus_snapshot_hash="sha256:abc123",
-        document_schema_version=DOCUMENT_SCHEMA_VERSION,
-        normalization_profile_id=NORMALIZATION_PROFILE_ID,
-        normalization_profile_version=NORMALIZATION_PROFILE_VERSION,
-        ranker_profile_id="lexical_bm25_v1",
-        created_at=datetime.now(timezone.utc),
-        document_count=2,
-        included_languages=["ar", "en"],
-        source_ids=["en-sahih", "quran-arabic"],
-    )
+def _profile(**overrides: Any) -> dict[str, Any]:
+    profile = {
+        "index_id": "qgraph-ayah-lexical-20260625-001",
+        "corpus_snapshot_id": "snapshot-001",
+        "corpus_snapshot_hash": "sha256:abc123",
+        "document_schema_version": DOCUMENT_SCHEMA_VERSION,
+        "normalization_profile_id": NORMALIZATION_PROFILE_ID,
+        "normalization_profile_version": NORMALIZATION_PROFILE_VERSION,
+        "analysis_profile_version": ANALYSIS_PROFILE_VERSION,
+    }
+    profile.update(overrides)
+    return profile
 
 
-def test_search_execute_retrieval_mode_returns_django_compatible_blocks_and_items():
-    backend = _FakeLexicalBackend(
-        result=LexicalSearchResult(
-            profile=_profile(),
-            hits=[
-                LexicalSearchHit(
-                    document_id="ayah:1:1:translation:en-sahih",
-                    score=7.5,
-                    text="In the name of Allah, the Entirely Merciful",
-                    highlighted_text="In the name of Allah",
-                    metadata={
-                        "surah_number": 1,
-                        "ayah_number": 1,
-                        "ayah_global_number": 1,
-                        "language_code": "en",
-                        "source_id": "en-sahih",
-                        "source_name": "Sahih International",
-                    },
-                )
-            ],
+class _Resp:
+    def __init__(self, status_code: int = 200, payload: Any = None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = ""
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _FakeAdapter:
+    def __init__(self, *, profile: dict[str, Any] | None = None, hits=None, get_status: int = 200):
+        self._profile = profile if profile is not None else _profile()
+        self._hits = hits if hits is not None else []
+        self._get_status = get_status
+
+    def get(self, path: str) -> _Resp:
+        if self._get_status != 200:
+            return _Resp(self._get_status)
+        return _Resp(
+            200,
+            {
+                "qgraph-ayah-lexical-20260625-001": {
+                    "mappings": {"_meta": {"qgraph_index_profile": self._profile}}
+                }
+            },
         )
-    )
-    request = SearchExecuteRequest(
-        query="mercy",
-        filters={"surahs": [1]},
-        output_preferences={"top_k": 5},
-        context={"query_id": 123},
-    )
 
+    def post(self, path: str, *, json_payload=None, content=None, headers=None) -> _Resp:
+        return _Resp(200, {"hits": {"hits": self._hits}})
+
+    def put(self, path: str, *, json_payload) -> _Resp:  # pragma: no cover
+        return _Resp(200, {})
+
+    def delete(self, path: str) -> _Resp:  # pragma: no cover
+        return _Resp(200, {})
+
+
+def _hit(score: float) -> dict[str, Any]:
+    return {
+        "_id": "ayah:1:1:translation:en-sahih",
+        "_score": score,
+        "_source": {
+            "id": "ayah:1:1:translation:en-sahih",
+            "canonical_content_id": "ayah:1:1",
+            "content_en": "In the name of Allah, the Entirely Merciful",
+            "metadata": {
+                "content_type": "translation",
+                "surah_number": 1,
+                "ayah_number": 1,
+                "ayah_global_number": 1,
+                "language_code": "en",
+                "source_id": "en-sahih",
+                "source_name": "Sahih International",
+            },
+        },
+        "highlight": {"content_en": ["In the name of <mark>Allah</mark>"]},
+    }
+
+
+def test_retrieval_mode_returns_django_compatible_blocks_and_items():
     response = build_search_execute_response(
-        request,
+        SearchExecuteRequest(
+            query="mercy", filters={"surahs": [1]}, output_preferences={"top_k": 5}
+        ),
         settings=_settings(),
-        lexical_backend=backend,
+        adapter=_FakeAdapter(hits=[_hit(7.5)]),
     )
 
     assert response.render_schema_version == "v1"
     assert response.metadata["mock"] is False
     assert response.metadata["backend"] == "open_search"
     assert response.metadata["corpus_snapshot_id"] == "snapshot-001"
-    assert backend.calls == [
-        {
-            "query": "mercy",
-            "filters": {"surahs": [1]},
-            "top_k": 5,
-            "expected_corpus_snapshot_id": "snapshot-001",
-            "expected_corpus_snapshot_hash": "sha256:abc123",
-            "expected_ranker_profile_id": "lexical_bm25_v1",
-        }
-    ]
+    assert response.metadata["analysis_profile_version"] == ANALYSIS_PROFILE_VERSION
 
     block = response.blocks[0]
-    assert block.order == 0
     assert block.block_type == "results"
     assert block.payload == {"query": "mercy", "result_count": 1, "top_k": 5}
-    assert block.items[0].rank == 1
-    assert block.items[0].result_type == "ayah"
-    assert block.items[0].score == 1.0
-    assert block.items[0].title == "Surah 1, Ayah 1"
-    assert block.items[0].provenance["backend"] == "open_search"
-    assert block.items[0].provenance["lexical_score"] == 7.5
-    assert block.items[0].match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
+    item = block.items[0]
+    assert item.rank == 1
+    assert item.result_type == "ayah"
+    assert item.score == 1.0
+    assert item.title == "Surah 1, Ayah 1"
+    assert item.provenance["backend"] == "open_search"
+    assert item.provenance["lexical_score"] == 7.5
+    assert item.match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
+    assert item.match_metadata["canonical_content_id"] == "ayah:1:1"
+    assert item.match_metadata["content_type"] == "translation"
 
 
-def _hit(score: float) -> LexicalSearchHit:
-    return LexicalSearchHit(
-        document_id="ayah:1:1:translation:en-sahih",
-        score=score,
-        text="In the name of Allah",
-        highlighted_text="In the name of Allah",
-        metadata={"surah_number": 1, "ayah_number": 1, "language_code": "en"},
-    )
-
-
-def test_search_execute_retrieval_confidence_reflects_absolute_score():
-    request = SearchExecuteRequest(query="mercy", filters={}, output_preferences={}, context={})
-
+def test_retrieval_confidence_reflects_absolute_score():
+    request = SearchExecuteRequest(query="mercy")
     weak = build_search_execute_response(
-        request,
-        settings=_settings(),
-        lexical_backend=_FakeLexicalBackend(
-            result=LexicalSearchResult(profile=_profile(), hits=[_hit(0.5)])
-        ),
+        request, settings=_settings(), adapter=_FakeAdapter(hits=[_hit(0.5)])
     )
     strong = build_search_execute_response(
-        request,
-        settings=_settings(),
-        lexical_backend=_FakeLexicalBackend(
-            result=LexicalSearchResult(profile=_profile(), hits=[_hit(40.0)])
-        ),
+        request, settings=_settings(), adapter=_FakeAdapter(hits=[_hit(40.0)])
     )
-
-    # Top item score stays relative (1.0) but overall confidence must reflect the
-    # absolute match strength, not always be 1.0.
     assert weak.blocks[0].items[0].score == 1.0
     assert 0.0 < weak.overall_confidence < 0.1
-    assert strong.overall_confidence > weak.overall_confidence
-    assert strong.overall_confidence < 1.0
+    assert weak.overall_confidence < strong.overall_confidence < 1.0
 
 
-def test_search_execute_retrieval_mode_maps_missing_index_to_clear_error():
-    backend = _FakeLexicalBackend(
-        error=LexicalSearchBackendError(
-            "OpenSearch lexical index is not available",
-            reason="index_not_found",
-            status_code=404,
-        )
+def test_retrieval_empty_results_warns():
+    response = build_search_execute_response(
+        SearchExecuteRequest(query="zzz"), settings=_settings(), adapter=_FakeAdapter(hits=[])
     )
+    assert response.blocks[0].items == []
+    assert response.blocks[0].warning_text == "No lexical matches were returned."
 
+
+def test_retrieval_maps_missing_index_to_clear_error():
     with pytest.raises(SearchRetrievalError) as exc_info:
         build_search_execute_response(
-            SearchExecuteRequest(
-                query="mercy",
-                filters={},
-                output_preferences={},
-                context={},
-            ),
+            SearchExecuteRequest(query="mercy"),
             settings=_settings(),
-            lexical_backend=backend,
+            adapter=_FakeAdapter(get_status=404),
         )
-
-    assert exc_info.value.message == "OpenSearch lexical index is not available"
     assert exc_info.value.reason == "index_not_found"
     assert exc_info.value.status_code == 404
 
 
-def test_search_execute_retrieval_mode_maps_stale_index_to_clear_error():
-    backend = _FakeLexicalBackend(
-        error=LexicalSearchBackendError(
-            "OpenSearch lexical index profile does not match active retrieval configuration",
-            reason="index_profile_mismatch",
-            detail={
-                "mismatches": {
-                    "corpus_snapshot_hash": {
-                        "expected": "sha256:abc123",
-                        "actual": "sha256:stale",
-                    }
-                }
-            },
-        )
-    )
-
+def test_retrieval_maps_incompatible_index_to_clear_error():
     with pytest.raises(SearchRetrievalError) as exc_info:
         build_search_execute_response(
-            SearchExecuteRequest(
-                query="mercy",
-                filters={},
-                output_preferences={},
-                context={},
-            ),
+            SearchExecuteRequest(query="mercy"),
             settings=_settings(),
-            lexical_backend=backend,
+            adapter=_FakeAdapter(profile=_profile(analysis_profile_version="stale")),
         )
-
-    assert exc_info.value.message == (
-        "OpenSearch lexical index profile does not match active retrieval configuration"
-    )
     assert exc_info.value.reason == "index_profile_mismatch"
-    assert exc_info.value.detail["mismatches"]["corpus_snapshot_hash"] == {
-        "expected": "sha256:abc123",
-        "actual": "sha256:stale",
-    }
 
 
-def test_search_execute_retrieval_mode_requires_configured_opensearch_url():
+def test_retrieval_requires_configured_opensearch_url():
     with pytest.raises(SearchRetrievalError) as exc_info:
         build_search_execute_response(
-            SearchExecuteRequest(
-                query="mercy",
-                filters={},
-                output_preferences={},
-                context={},
-            ),
+            SearchExecuteRequest(query="mercy"),
             settings=_settings(opensearch_url=""),
         )
-
-    assert exc_info.value.message == "OpenSearch lexical backend is not configured"
     assert exc_info.value.reason == "opensearch_not_configured"
-
-
-def test_search_execute_retrieval_mode_requires_active_corpus_snapshot_config():
-    with pytest.raises(SearchRetrievalError) as exc_info:
-        build_search_execute_response(
-            SearchExecuteRequest(
-                query="mercy",
-                filters={},
-                output_preferences={},
-                context={},
-            ),
-            settings=_settings(
-                opensearch_url="http://opensearch:9200",
-                search_active_corpus_snapshot_id="",
-                search_active_corpus_snapshot_hash="",
-            ),
-        )
-
-    assert exc_info.value.reason == "opensearch_active_snapshot_not_configured"

@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     search_backend_version: str = "2026-04-01"
     search_lexical_backend_mode: str = "mock"
     search_corpus_snapshot_cache_dir: Path = Path("data/corpus_snapshots")
-    search_active_corpus_snapshot_id: str = ""
-    search_active_corpus_snapshot_hash: str = ""
     search_ranker_profile_id: str = "lexical_bm25_v1"
     # Heuristic scale for mapping an absolute BM25 score to a 0..1 confidence via
     # 1 - exp(-score / k). Larger k => more conservative confidence. Tune against
@@ -36,7 +34,6 @@ class Settings(BaseSettings):
     django_internal_timeout_seconds: float = 10.0
 
     opensearch_url: str = ""
-    opensearch_index_name: str = "qgraph-ayah-lexical-v1"
     # The serving alias the app queries; activation repoints it at a new physical index version.
     opensearch_alias: str = "qgraph-ayah-lexical-active"
     # Physical index versions are named "<prefix>-<YYYYMMDD>-<NNN>".
