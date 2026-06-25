@@ -33,33 +33,32 @@ Arabic ayah and its translations share it) and `surah:{n}` for a surah name.
 
 | id | query | lang | scope | expects (must appear in top K) | status | guards |
 |---|---|---|---|---|---|---|
-| `ar-arrahman-diacritics` | `الرحمن` | ar | ayah + translation | `ayah:1:1`, `ayah:1:3` | pending | diacritic-insensitive normalization (الرحمٰن ↔ الرحمن) — **proves the analyzer fix** |
+| `ar-arrahman-diacritics` | `الرحمن` | ar | ayah + translation | `ayah:1:1`, `ayah:1:3` | **confirmed** | diacritic-insensitive normalization (الرحمٰن ↔ الرحمن) — **proves the analyzer fix** |
 | `ar-basmala-phrase` | `بسم الله الرحمن الرحيم` | ar | ayah + translation | `ayah:1:1` | **confirmed** | `match_phrase` on the normalized analyzer |
-| `ar-la-ilaha-particle` | `لا إله` | ar | ayah + translation | `ayah:2:255`, `ayah:2:163` | pending | negation particle **لا preserved** (the vanilla `arabic` analyzer would drop it) — **proves the analyzer fix** |
+| `ar-la-ilaha-particle` | `لا إله` | ar | ayah + translation | `ayah:2:163` | pending | negation particle **لا preserved** (the vanilla `arabic` analyzer would drop it) — **proves the analyzer fix** |
 | `ar-musa-maqsura` | `موسى` | ar | ayah + translation | _(none yet)_ | pending | alef-maqsura / yeh folding (موسى ↔ موسي) |
 | `ar-surah-name-fatiha` | `الفاتحة` | ar | surah-name only | `surah:1` | **confirmed** | surah-name docs reachable under the surah-name scope |
-| `en-surah-name-baqara` | `Baqara` | en | surah-name only | `surah:2` | pending | transliterated surah-name match (see note) |
+| `en-surah-name-baqara` | `Baqara` | en | surah-name only | `surah:2` | **confirmed** | transliterated surah-name match (Baqara ↔ Al-Baqarah) |
 | `en-mercy-recall` | `mercy` | en | ayah + translation | _(none yet)_ | pending | English translation recall |
 | `en-patience-stemming` | `patience` | en | ayah + translation | _(none yet)_ | pending | English stemming (patience / patient) |
 
 `ar-la-ilaha-particle` and `ar-arrahman-diacritics` are the two that prove the
 normalize-don't-stem analyzers. If they behave, the highest-value correctness change works.
 
-### Note on `Baqara`
+## Remaining `pending` cases
 
-The indexed transliteration for surah 2 is `Al-Baqarah`. The partial query `Baqara` may **not** match
-under the plain `english` analyzer (stemming won't bridge `baqara` ↔ `baqarah`). This case doubles as
-a probe: if it fails at build-validation time, that is the signal to give the surah-name/transliteration
-field an edge-ngram or fuzzy analyzer. It is `pending` precisely so it does not block a build before
-that decision is made.
+These were validated against the full corpus and left `pending` because their exact membership is
+ranking- or translation-dependent (so they should not hard-block a build):
+
+- `ar-la-ilaha-particle` — `2:163` ranks in the top results; `2:255` (Ayat al-Kursi) also contains
+  لا إله but its length normalizes it out of the top-k. The particle preservation itself is
+  hard-guarded by the normalizer unit test.
+- `ar-musa-maqsura`, `en-mercy-recall`, `en-patience-stemming` — return results, but their concrete
+  `must_include_canonical_ids` are left empty for a human to pin from real output.
 
 ## What a human needs to do
 
-After the first real index build (see the indexing workflow), look at the actual results for each
-`pending` case and either:
-
-1. Promote it to `confirmed` once its `must_include_canonical_ids` are verified, or
-2. Fill in concrete ids for the cases currently left empty (`موسى`, `mercy`, `patience`), or
-3. Adjust expectations (e.g. decide `Baqara` requires an analyzer change).
-
-Edit the cases in `src/search/indexing/eval_set.py` and bump `EVAL_SET_VERSION` when the set changes.
+Look at the actual results for each `pending` case and either fill in concrete
+`must_include_canonical_ids` and promote it to `confirmed`, or leave it `pending` if its membership is
+inherently fragile. Edit the cases in `src/search/indexing/eval_set.py` and bump `EVAL_SET_VERSION`
+when the set changes.

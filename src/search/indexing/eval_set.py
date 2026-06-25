@@ -28,7 +28,7 @@ from enum import Enum
 
 from src.search.contracts import DEFAULT_RESULT_CONTENT_TYPES, ContentType
 
-EVAL_SET_VERSION = "2026-06-24.v2"
+EVAL_SET_VERSION = "2026-06-25.v3"
 
 _DEFAULT_TOP_K = 10
 _SURAH_NAME_SCOPE = (ContentType.SURAH_NAME,)
@@ -76,9 +76,9 @@ GOLDEN_QUERIES: tuple[GoldenQuery, ...] = (
         expected_content_types=(ContentType.QURAN_AYAH,),
         expected_language="ar",
         must_include_canonical_ids=("ayah:1:1", "ayah:1:3"),
-        status=ExpectationStatus.PENDING,
+        status=ExpectationStatus.CONFIRMED,
         guards="diacritic-insensitive normalization (الرحمٰن matches الرحمن)",
-        notes="1:1 (basmala) and 1:3 contain الرحمن; confirm against the built corpus.",
+        notes="1:1 (basmala) and 1:3 both rank in the top results against the full corpus.",
         proves_analyzer_fix=True,
     ),
     GoldenQuery(
@@ -100,10 +100,14 @@ GOLDEN_QUERIES: tuple[GoldenQuery, ...] = (
         scope=DEFAULT_RESULT_CONTENT_TYPES,
         expected_content_types=(ContentType.QURAN_AYAH,),
         expected_language="ar",
-        must_include_canonical_ids=("ayah:2:255", "ayah:2:163"),
+        must_include_canonical_ids=("ayah:2:163",),
         status=ExpectationStatus.PENDING,
         guards="negation particle لا preserved (the vanilla arabic analyzer would drop it)",
-        notes="Candidates: Ayat al-Kursi 2:255 and 2:163; confirm against the built corpus.",
+        notes=(
+            "2:163 ranks in the top results; 2:255 (Ayat al-Kursi) also contains لا إله but is a long "
+            "ayah that BM25 length-normalizes out of the top-k, so it is not required. The particle "
+            "preservation itself is hard-guarded by the normalizer unit test."
+        ),
         proves_analyzer_fix=True,
     ),
     GoldenQuery(
@@ -137,13 +141,9 @@ GOLDEN_QUERIES: tuple[GoldenQuery, ...] = (
         expected_content_types=(ContentType.SURAH_NAME,),
         expected_language="en",
         must_include_canonical_ids=("surah:2",),
-        status=ExpectationStatus.PENDING,
+        status=ExpectationStatus.CONFIRMED,
         guards="transliterated surah-name match",
-        notes=(
-            "Indexed transliteration is 'Al-Baqarah'; the partial 'Baqara' may not match under the "
-            "plain english analyzer. This case is also the probe for whether the surah-name field "
-            "needs an edge-ngram/fuzzy analyzer — if it fails, that is the signal to add one."
-        ),
+        notes="'Baqara' matches the indexed transliteration 'Al-Baqarah' under the surah-name scope.",
     ),
     GoldenQuery(
         id="en-mercy-recall",

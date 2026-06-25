@@ -96,12 +96,24 @@ def _settings() -> Settings:
     )
 
 
-def _snapshot(*, surah_number: int, with_surah_names: bool = True) -> QuranCorpusSnapshot:
-    surahs = (
-        [{"number": surah_number, "arabic_name": "الفاتحة", "transliteration": "Al-Fatihah"}]
-        if with_surah_names
-        else []
-    )
+def _ayah(surah: int, ayah: int, global_number: int, text_ar: str) -> dict:
+    return {
+        "surah_number": surah,
+        "ayah_number": ayah,
+        "ayah_global_number": global_number,
+        "text_ar": text_ar,
+        "translations": [
+            {
+                "language_code": "en",
+                "source_id": "en-sahih",
+                "source_name": "Sahih International",
+                "text": "In the name of Allah, the Entirely Merciful",
+            }
+        ],
+    }
+
+
+def _make_snapshot(*, surahs: list[dict], ayahs: list[dict]) -> QuranCorpusSnapshot:
     return QuranCorpusSnapshot.model_validate(
         {
             "schema_version": "qgraph-corpus-snapshot-v1",
@@ -112,23 +124,30 @@ def _snapshot(*, surah_number: int, with_surah_names: bool = True) -> QuranCorpu
             "counts": {},
             "translation_sources": [],
             "surahs": surahs,
-            "ayahs": [
-                {
-                    "surah_number": surah_number,
-                    "ayah_number": 1,
-                    "ayah_global_number": 1,
-                    "text_ar": "بسم الله الرحمن الرحيم",
-                    "translations": [
-                        {
-                            "language_code": "en",
-                            "source_id": "en-sahih",
-                            "source_name": "Sahih International",
-                            "text": "In the name of Allah, the Entirely Merciful",
-                        }
-                    ],
-                }
-            ],
+            "ayahs": ayahs,
         }
+    )
+
+
+def _passing_snapshot() -> QuranCorpusSnapshot:
+    # Carries every confirmed golden canonical: ayah:1:1, ayah:1:3, surah:1, surah:2.
+    return _make_snapshot(
+        surahs=[
+            {"number": 1, "arabic_name": "الفاتحة", "transliteration": "Al-Fatihah"},
+            {"number": 2, "arabic_name": "البقرة", "transliteration": "Al-Baqarah"},
+        ],
+        ayahs=[
+            _ayah(1, 1, 1, "بسم الله الرحمن الرحيم"),
+            _ayah(1, 3, 3, "الرحمن الرحيم"),
+        ],
+    )
+
+
+def _failing_snapshot() -> QuranCorpusSnapshot:
+    # Lacks the confirmed canonicals, so golden-set validation must fail.
+    return _make_snapshot(
+        surahs=[{"number": 3, "arabic_name": "آل عمران", "transliteration": "Aal-e-Imran"}],
+        ayahs=[_ayah(3, 1, 1, "الم")],
     )
 
 
@@ -141,7 +160,7 @@ def _patch_corpus(monkeypatch, snapshot: QuranCorpusSnapshot) -> None:
 
 
 def test_build_creates_index_and_passes_validation(monkeypatch):
-    _patch_corpus(monkeypatch, _snapshot(surah_number=1))
+    _patch_corpus(monkeypatch, _passing_snapshot())
     cluster = _Cluster()
 
     report = builder.build_index(settings=_settings(), adapter=cluster)
@@ -149,7 +168,7 @@ def test_build_creates_index_and_passes_validation(monkeypatch):
     assert report["ok"] is True
     assert report["activated"] is False
     assert report["index"].startswith("qgraph-ayah-lexical-")
-    assert report["document_count"] == 4  # arabic + translation + 2 surah-name docs
+    assert report["document_count"] == 8  # 2 ayat x (arabic+translation) + 2 surahs x 2 names
     assert report["validation"]["hard_failures"] == []
     assert report["index"] in cluster.indices
     # Build alone never activates.
@@ -157,7 +176,7 @@ def test_build_creates_index_and_passes_validation(monkeypatch):
 
 
 def test_build_with_activate_swaps_the_alias(monkeypatch):
-    _patch_corpus(monkeypatch, _snapshot(surah_number=1))
+    _patch_corpus(monkeypatch, _passing_snapshot())
     cluster = _Cluster()
 
     report = builder.build_index(settings=_settings(), adapter=cluster, activate=True)
@@ -168,8 +187,8 @@ def test_build_with_activate_swaps_the_alias(monkeypatch):
 
 
 def test_build_fails_validation_when_confirmed_hits_missing(monkeypatch):
-    # Surah 2 only: the confirmed cases (ayah:1:1, surah:1) cannot be satisfied.
-    _patch_corpus(monkeypatch, _snapshot(surah_number=2))
+    # Missing the confirmed canonicals (ayah:1:1, ayah:1:3, surah:1, surah:2).
+    _patch_corpus(monkeypatch, _failing_snapshot())
     cluster = _Cluster()
 
     report = builder.build_index(settings=_settings(), adapter=cluster, activate=True)
@@ -180,7 +199,7 @@ def test_build_fails_validation_when_confirmed_hits_missing(monkeypatch):
 
 
 def test_dry_run_writes_nothing(monkeypatch):
-    _patch_corpus(monkeypatch, _snapshot(surah_number=1))
+    _patch_corpus(monkeypatch, _passing_snapshot())
     cluster = _Cluster()
 
     report = builder.build_index(settings=_settings(), adapter=cluster, dry_run=True)
@@ -190,7 +209,7 @@ def test_dry_run_writes_nothing(monkeypatch):
 
 
 def test_activate_then_status_reports_active_index(monkeypatch):
-    _patch_corpus(monkeypatch, _snapshot(surah_number=1))
+    _patch_corpus(monkeypatch, _passing_snapshot())
     settings = _settings()
     cluster = _Cluster()
     report = builder.build_index(settings=settings, adapter=cluster)
@@ -204,7 +223,7 @@ def test_activate_then_status_reports_active_index(monkeypatch):
 
 
 def test_activate_with_delete_old_removes_previous(monkeypatch):
-    _patch_corpus(monkeypatch, _snapshot(surah_number=1))
+    _patch_corpus(monkeypatch, _passing_snapshot())
     settings = _settings()
     cluster = _Cluster()
 
