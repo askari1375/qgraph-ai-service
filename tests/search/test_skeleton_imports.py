@@ -1,16 +1,11 @@
-"""Locks the skeleton contract: the package imports cleanly and the not-yet-built behavior is a stub.
+"""Locks the package shape: every retrieval module imports cleanly.
 
-When one of these is implemented, the matching assertion here should be deleted in the same change —
-that is the intended signal that the skeleton is being filled.
+All behavior is now implemented; this just guards against import-time breakage across the package.
 """
 
 import importlib
 
 import pytest
-
-from src.api.schemas.search import SearchExecuteRequest
-from src.search.contracts import QueryContext
-from src.search.response_builder import build_execute_response
 
 SKELETON_MODULES = [
     "src.search",
@@ -33,9 +28,3 @@ SKELETON_MODULES = [
 @pytest.mark.parametrize("module_name", SKELETON_MODULES)
 def test_module_imports(module_name):
     assert importlib.import_module(module_name) is not None
-
-
-def test_response_builder_stub_raises_not_implemented():
-    qc = QueryContext(raw_query="mercy")
-    with pytest.raises(NotImplementedError):
-        build_execute_response([], SearchExecuteRequest(query="mercy"), qc)
