@@ -126,6 +126,13 @@ class SearchFilters(BaseModel):
 
     ``content_types`` defaults to :data:`DEFAULT_RESULT_CONTENT_TYPES` (ayah + translation) so the
     surah-name documents stay out of general results unless a caller asks for them.
+
+    ``include_translations`` and ``translation_languages`` carry the product-level intent of the
+    translation control: whether translations are surfaced at all, and (optionally) which languages.
+    They are decoupled from the generic ``languages`` filter — which language-restricts *every* hit —
+    because the Arabic verses must always be kept regardless of the chosen translation languages.
+    Search orchestration turns this intent into per-scope filters via :meth:`quran_ayah_scope` and
+    :meth:`translation_scope`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -138,6 +145,8 @@ class SearchFilters(BaseModel):
     surah_numbers: list[int] = Field(default_factory=list)
     ayah_global_min: int | None = None
     ayah_global_max: int | None = None
+    include_translations: bool = True
+    translation_languages: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_request_filters(cls, raw: dict[str, Any]) -> SearchFilters:
@@ -146,6 +155,7 @@ class SearchFilters(BaseModel):
         Tolerant: unknown keys are ignored and malformed values are dropped. ``content_types``
         defaults to the general-result scope (ayah + translation) when absent or all-invalid, so
         surah-name documents stay out of general results unless explicitly requested.
+        ``include_translations`` defaults to ``True`` (translations shown unless explicitly disabled).
         """
         if not isinstance(raw, dict):
             raw = {}
@@ -159,11 +169,44 @@ class SearchFilters(BaseModel):
             ),
             "ayah_global_min": _coerce_optional_int(raw.get("ayah_global_min")),
             "ayah_global_max": _coerce_optional_int(raw.get("ayah_global_max")),
+            "include_translations": _coerce_bool(raw.get("include_translations"), default=True),
+            "translation_languages": _coerce_str_list(
+                raw, "translation_languages", fallback_key="translation_language", casefold=True
+            ),
         }
         content_types = _coerce_content_types(raw.get("content_types"))
         if content_types:
             kwargs["content_types"] = content_types
         return cls(**kwargs)
+
+    def quran_ayah_scope(self) -> SearchFilters:
+        """Narrow to Arabic Quran ayahs only — always all languages/sources of the verse.
+
+        The Arabic verse list is independent of the translation control, so language/source/translation
+        restrictions are cleared; verse-level restrictions (surah, ayah range) are preserved.
+        """
+        return self.model_copy(
+            update={
+                "content_types": [ContentType.QURAN_AYAH],
+                "languages": [],
+                "source_ids": [],
+                "translation_languages": [],
+            }
+        )
+
+    def translation_scope(self) -> SearchFilters:
+        """Narrow to translations, optionally restricted to the chosen translation languages.
+
+        Within this scope ``content_type`` is already ``translation``, so the chosen languages compile
+        to a plain ``language_code`` filter that touches translations only.
+        """
+        return self.model_copy(
+            update={
+                "content_types": [ContentType.TRANSLATION],
+                "languages": list(self.translation_languages),
+                "translation_languages": [],
+            }
+        )
 
     def to_opensearch_filter(self) -> list[dict[str, Any]]:
         """Compile to a list of OpenSearch ``bool.filter`` clauses (``terms``/``range``)."""
@@ -312,3 +355,15 @@ def _coerce_optional_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().casefold()
+        if text in {"true", "1", "yes"}:
+            return True
+        if text in {"false", "0", "no"}:
+            return False
+    return default

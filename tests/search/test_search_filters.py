@@ -12,6 +12,8 @@ def test_defaults_to_general_result_scope_when_empty():
     assert filters.source_ids == []
     assert filters.surah_numbers == []
     assert filters.ayah_global_min is None
+    assert filters.include_translations is True
+    assert filters.translation_languages == []
 
 
 def test_parses_and_coerces_known_keys():
@@ -74,3 +76,62 @@ def test_to_opensearch_filter_compiles_all_clauses():
 def test_to_opensearch_filter_omits_absent_range_bounds():
     clauses = SearchFilters.from_request_filters({"ayah_global_min": 5}).to_opensearch_filter()
     assert {"range": {"metadata.ayah_global_number": {"gte": 5}}} in clauses
+
+
+def test_parses_translation_intent():
+    filters = SearchFilters.from_request_filters(
+        {"include_translations": False, "translation_languages": ["EN", "en", "Fa"]}
+    )
+    assert filters.include_translations is False
+    assert filters.translation_languages == ["en", "fa"]
+
+
+def test_include_translations_accepts_string_and_defaults_true():
+    assert (
+        SearchFilters.from_request_filters({"include_translations": "false"}).include_translations
+        is False
+    )
+    assert (
+        SearchFilters.from_request_filters({"include_translations": "true"}).include_translations
+        is True
+    )
+    assert (
+        SearchFilters.from_request_filters({"include_translations": "garbage"}).include_translations
+        is True
+    )
+
+
+def test_translation_language_singular_is_accepted_as_fallback_key():
+    filters = SearchFilters.from_request_filters({"translation_language": ["fa"]})
+    assert filters.translation_languages == ["fa"]
+
+
+def test_quran_ayah_scope_keeps_arabic_only_and_drops_translation_restrictions():
+    base = SearchFilters.from_request_filters(
+        {"translation_languages": ["en"], "surahs": [2], "source_ids": ["en-sahih"]}
+    )
+    scope = base.quran_ayah_scope()
+    assert scope.content_types == [ContentType.QURAN_AYAH]
+    assert scope.languages == []
+    assert scope.source_ids == []
+    assert scope.surah_numbers == [2]  # verse-level restriction preserved
+    clauses = scope.to_opensearch_filter()
+    assert {"terms": {"metadata.content_type": ["quran_ayah"]}} in clauses
+    assert all("metadata.language_code" not in c.get("terms", {}) for c in clauses)
+
+
+def test_translation_scope_language_restricts_translations_only():
+    base = SearchFilters.from_request_filters({"translation_languages": ["en"]})
+    scope = base.translation_scope()
+    assert scope.content_types == [ContentType.TRANSLATION]
+    assert scope.languages == ["en"]
+    clauses = scope.to_opensearch_filter()
+    assert {"terms": {"metadata.content_type": ["translation"]}} in clauses
+    assert {"terms": {"metadata.language_code": ["en"]}} in clauses
+
+
+def test_translation_scope_without_languages_includes_all_translations():
+    scope = SearchFilters.from_request_filters({}).translation_scope()
+    assert scope.content_types == [ContentType.TRANSLATION]
+    clauses = scope.to_opensearch_filter()
+    assert all("metadata.language_code" not in c.get("terms", {}) for c in clauses)
