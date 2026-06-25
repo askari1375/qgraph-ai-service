@@ -38,8 +38,8 @@ _RECALL_BOOST = 0.3
 _CONTENT_FIELDS = ("content_ar", "content_fa", "content_en", "content_general")
 
 
-def build_search_body(query_context: QueryContext) -> dict[str, Any]:
-    """Build the OpenSearch ``_search`` body for a query context."""
+def _build_bool_query(query_context: QueryContext) -> dict[str, Any]:
+    """Build the shared ``bool`` query (multi-field match + compiled filters)."""
     should = [
         {
             "multi_match": {
@@ -61,10 +61,14 @@ def build_search_body(query_context: QueryContext) -> dict[str, Any]:
     filter_clauses = query_context.filters.to_opensearch_filter()
     if filter_clauses:
         bool_query["filter"] = filter_clauses
+    return bool_query
 
+
+def build_search_body(query_context: QueryContext) -> dict[str, Any]:
+    """Build the OpenSearch ``_search`` body for a query context."""
     body: dict[str, Any] = {
         "size": query_context.top_k,
-        "query": {"bool": bool_query},
+        "query": {"bool": _build_bool_query(query_context)},
         "highlight": {
             "pre_tags": ["<mark>"],
             "post_tags": ["</mark>"],
@@ -74,6 +78,38 @@ def build_search_body(query_context: QueryContext) -> dict[str, Any]:
     if query_context.collapse:
         body["collapse"] = {"field": "canonical_content_id"}
     return body
+
+
+def build_surah_distribution_body(query_context: QueryContext, *, size: int) -> dict[str, Any]:
+    """A ``size:0`` body that aggregates match counts per surah over the filtered query."""
+    return {
+        "size": 0,
+        "query": {"bool": _build_bool_query(query_context)},
+        "aggs": {
+            "surahs": {"terms": {"field": "metadata.surah_number", "size": size}},
+        },
+    }
+
+
+def aggregate_surah_distribution(
+    adapter: OpenSearchAdapter,
+    target: str,
+    query_context: QueryContext,
+    *,
+    size: int = 15,
+) -> list[dict[str, int]]:
+    """Return ``[{surah, value}]`` — match counts per surah for the query (the chart payload)."""
+    payload = search(adapter, target, build_surah_distribution_body(query_context, size=size))
+    buckets = payload.get("aggregations", {}).get("surahs", {}).get("buckets", [])
+    distribution: list[dict[str, int]] = []
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        key, count = bucket.get("key"), bucket.get("doc_count")
+        if isinstance(key, int) and isinstance(count, int):
+            distribution.append({"surah": key, "value": count})
+    distribution.sort(key=lambda entry: entry["surah"])
+    return distribution
 
 
 class LexicalRetriever:

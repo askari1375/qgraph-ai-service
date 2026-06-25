@@ -9,7 +9,9 @@ from src.search.indexing.normalization import NORMALIZATION_PROFILE_VERSION
 from src.search.opensearch_client import OpenSearchError
 from src.search.retrievers.lexical_opensearch import (
     LexicalRetriever,
+    aggregate_surah_distribution,
     build_search_body,
+    build_surah_distribution_body,
 )
 
 
@@ -165,3 +167,40 @@ def test_retrieve_rejects_unknown_content_type():
     with pytest.raises(OpenSearchError) as exc_info:
         LexicalRetriever(adapter, "qgraph-ayah-lexical-active").retrieve(_query_context())
     assert exc_info.value.reason == "unexpected_content_type"
+
+
+def test_build_surah_distribution_body_is_size_zero_terms_agg():
+    context = _query_context(
+        filters=SearchFilters.from_request_filters({"content_types": ["quran_ayah"]})
+    )
+    body = build_surah_distribution_body(context, size=15)
+    assert body["size"] == 0
+    assert body["aggs"]["surahs"]["terms"] == {"field": "metadata.surah_number", "size": 15}
+    assert {"terms": {"metadata.content_type": ["quran_ayah"]}} in body["query"]["bool"]["filter"]
+
+
+def test_aggregate_surah_distribution_parses_and_sorts_buckets():
+    adapter = _FakeAdapter(
+        profile=_compatible_profile(),
+        search_payload={
+            "aggregations": {
+                "surahs": {
+                    "buckets": [
+                        {"key": 2, "doc_count": 17},
+                        {"key": 1, "doc_count": 3},
+                    ]
+                }
+            }
+        },
+    )
+    distribution = aggregate_surah_distribution(
+        adapter, "qgraph-ayah-lexical-active", _query_context()
+    )
+    assert distribution == [{"surah": 1, "value": 3}, {"surah": 2, "value": 17}]
+
+
+def test_aggregate_surah_distribution_empty_when_no_aggregations():
+    adapter = _FakeAdapter(profile=_compatible_profile(), search_payload={"hits": {"hits": []}})
+    assert (
+        aggregate_surah_distribution(adapter, "qgraph-ayah-lexical-active", _query_context()) == []
+    )
