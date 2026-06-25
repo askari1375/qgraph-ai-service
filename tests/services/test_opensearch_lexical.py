@@ -4,9 +4,9 @@ import httpx
 import pytest
 
 from src.api.schemas.corpus import QuranCorpusSnapshot
+from src.search.opensearch_client import OpenSearchHTTPAdapter
 from src.services.opensearch_lexical import (
     LexicalSearchBackendError,
-    OpenSearchHTTPAdapter,
     OpenSearchLexicalBackend,
     build_lexical_index_profile,
     build_search_request,
@@ -389,7 +389,7 @@ def test_opensearch_http_adapter_maps_connection_errors_to_clear_error():
     with pytest.raises(LexicalSearchBackendError) as exc_info:
         backend.search(query="mercy", filters={}, top_k=5)
 
-    assert exc_info.value.message == "Failed to reach OpenSearch lexical backend"
+    assert exc_info.value.message == "Failed to reach OpenSearch"
     assert exc_info.value.reason == "opensearch_request_failed"
     assert exc_info.value.detail["method"] == "GET"
     assert exc_info.value.detail["path"] == f"/{INDEX_NAME}"

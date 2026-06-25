@@ -9,12 +9,12 @@ from src.api.schemas.search import (
     SearchResponseBlock,
 )
 from src.config import Settings, get_settings
+from src.search.opensearch_client import OpenSearchHTTPAdapter
 from src.services.opensearch_lexical import (
     OPEN_SEARCH_BACKEND_NAME,
     LexicalIndexProfile,
     LexicalSearchBackendError,
     LexicalSearchResult,
-    OpenSearchHTTPAdapter,
     OpenSearchLexicalBackend,
 )
 

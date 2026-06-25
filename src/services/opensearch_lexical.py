@@ -4,11 +4,16 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Iterator
-from typing import Any, Protocol
+from typing import Any
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.search.opensearch_client import (
+    OpenSearchAdapter,
+    OpenSearchError,
+    raise_for_opensearch_error as _raise_for_opensearch_error,
+    response_json as _response_json,
+)
 from src.services.search_documents import (
     DOCUMENT_SCHEMA_VERSION,
     SearchIndexDocument,
@@ -24,102 +29,9 @@ LEXICAL_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_lexical_index_profile.v1"
 DEFAULT_BULK_BATCH_DOCUMENT_COUNT = 1000
 DEFAULT_BULK_BATCH_MAX_BYTES = 8 * 1024 * 1024
 
-
-class LexicalSearchBackendError(Exception):
-    def __init__(
-        self,
-        message: str,
-        *,
-        reason: str,
-        status_code: int | None = None,
-        detail: dict[str, Any] | None = None,
-    ):
-        super().__init__(message)
-        self.message = message
-        self.reason = reason
-        self.status_code = status_code
-        self.detail = detail or {}
-
-
-class OpenSearchResponse(Protocol):
-    status_code: int
-    text: str
-
-    def json(self) -> Any: ...
-
-
-class OpenSearchAdapter(Protocol):
-    def get(self, path: str) -> OpenSearchResponse: ...
-
-    def delete(self, path: str) -> OpenSearchResponse: ...
-
-    def put(self, path: str, *, json_payload: dict[str, Any]) -> OpenSearchResponse: ...
-
-    def post(
-        self,
-        path: str,
-        *,
-        json_payload: dict[str, Any] | None = None,
-        content: str | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> OpenSearchResponse: ...
-
-
-class OpenSearchHTTPAdapter:
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        timeout_seconds: float = 10.0,
-        auth: tuple[str, str] | None = None,
-        verify: bool | str = True,
-        http_client: httpx.Client | None = None,
-    ):
-        self.base_url = base_url.rstrip("/")
-        self._http_client = http_client or httpx.Client(
-            timeout=timeout_seconds, auth=auth, verify=verify
-        )
-
-    def get(self, path: str) -> httpx.Response:
-        return self._request("GET", path)
-
-    def delete(self, path: str) -> httpx.Response:
-        return self._request("DELETE", path)
-
-    def put(self, path: str, *, json_payload: dict[str, Any]) -> httpx.Response:
-        return self._request("PUT", path, json=json_payload)
-
-    def post(
-        self,
-        path: str,
-        *,
-        json_payload: dict[str, Any] | None = None,
-        content: str | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Response:
-        return self._request(
-            "POST",
-            path,
-            json=json_payload,
-            content=content,
-            headers=headers,
-        )
-
-    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        try:
-            return self._http_client.request(method, f"{self.base_url}{path}", **kwargs)
-        except httpx.RequestError as exc:
-            raise LexicalSearchBackendError(
-                "Failed to reach OpenSearch lexical backend",
-                reason="opensearch_request_failed",
-                detail={
-                    "method": method,
-                    "path": path,
-                    "base_url": self.base_url,
-                    "error_type": exc.__class__.__name__,
-                    "error": str(exc),
-                },
-            ) from exc
+# The OpenSearch transport now lives in src/search/opensearch_client.py; alias the error type so the
+# existing public name keeps working until this module is retired.
+LexicalSearchBackendError = OpenSearchError
 
 
 class LexicalIndexProfile(BaseModel):
@@ -744,35 +656,3 @@ def _extract_highlight(raw_hit: dict[str, Any]) -> str:
         if isinstance(values, list) and values:
             return str(values[0])
     return ""
-
-
-def _raise_for_opensearch_error(
-    response: OpenSearchResponse,
-    *,
-    message: str,
-    reason: str,
-    detail: dict[str, Any] | None = None,
-) -> None:
-    if response.status_code < 400:
-        return
-    error_detail = {"body": response.text}
-    if detail:
-        error_detail.update(detail)
-    raise LexicalSearchBackendError(
-        message,
-        reason=reason,
-        status_code=response.status_code,
-        detail=error_detail,
-    )
-
-
-def _response_json(response: OpenSearchResponse) -> Any:
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise LexicalSearchBackendError(
-            "OpenSearch returned invalid JSON",
-            reason="opensearch_invalid_json",
-            status_code=response.status_code,
-            detail={"message": str(exc)},
-        ) from exc
