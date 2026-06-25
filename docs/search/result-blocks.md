@@ -25,23 +25,20 @@ From `qgraph-frontend/src/features/search/blocks/block-registry.ts`. Any other `
 to `UnknownBlock` (degrades gracefully — not a real render).
 
 - **`text`** → `payload = { headline?, details }` (`details`: string)
-- **`markdown`** → `payload = { headline?, content }` (`content`: GFM string — headings, tables, lists,
-  code, blockquote, links). **Raw HTML is not rendered**, so highlight `<mark>` tags must be stripped
-  before they go in `content`.
+- **`markdown`** → `payload = { headline?, content }` (`content`: GFM string; raw HTML is not rendered)
 - **`surah_distribution`** → `payload = { values: [{ surah: int, value: int }], y_label?, max_value? }`
+- **`ayah_results`** → `payload = { query, result_count }`; the matches are the block's **`items[]`**
+  (verse cards). Each `SearchResultItem`: `rank`, `result_type` (`ayah` | `surah`), `score` (0..1,
+  min-max for relative bars), `title` (reference, e.g. `Surah 1, Ayah 1`), `snippet_text`,
+  `highlighted_text` (contains `<mark>…</mark>` — the typed renderer renders the highlight), and
+  `match_metadata` (`document_id`, `canonical_content_id`, `content_type`, `text`, `surah_number`,
+  `ayah_number`, `ayah_global_number`, `language_code`, `source_id`, `source_name`). Django assigns each
+  persisted item an `id`; bookmark/feedback target it via `result_item_id`.
 
 ## What search returns now
 
-A single **`markdown`** block: a table of the ranked matches (`# | Reference | Match | Source`).
-`items` is empty. This is the renderable bridge for the current UI.
-
-## Known gaps (next steps)
-
-- **`items[]` is not rendered.** There is no `results`/verse renderer yet, so per-item bookmark/feedback
-  (which the Django search app models) is not wired. A typed verse-results block + frontend renderer is
-  the scheduled next step; it will carry `items[]` as proper verse cards (RTL Arabic, highlight ranges,
-  click-through).
-- **No distribution chart yet.** The real `surah_distribution` (a `terms` aggregation on
-  `metadata.surah_number`) returns alongside the typed verse block.
+- an **`ayah_results`** block: the ranked matches as typed `items[]` (verse cards).
+- a **`surah_distribution`** block (when there are matches): real per-surah match counts from a `terms`
+  aggregation on `metadata.surah_number`.
 
 Keep this file in sync when `block-registry.ts` changes.

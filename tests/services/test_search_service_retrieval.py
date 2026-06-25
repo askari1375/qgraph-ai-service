@@ -44,9 +44,17 @@ class _Resp:
 
 
 class _FakeAdapter:
-    def __init__(self, *, profile: dict[str, Any] | None = None, hits=None, get_status: int = 200):
+    def __init__(
+        self,
+        *,
+        profile: dict[str, Any] | None = None,
+        hits=None,
+        aggregations=None,
+        get_status: int = 200,
+    ):
         self._profile = profile if profile is not None else _profile()
         self._hits = hits if hits is not None else []
+        self._aggregations = aggregations or {}
         self._get_status = get_status
 
     def get(self, path: str) -> _Resp:
@@ -62,7 +70,8 @@ class _FakeAdapter:
         )
 
     def post(self, path: str, *, json_payload=None, content=None, headers=None) -> _Resp:
-        return _Resp(200, {"hits": {"hits": self._hits}})
+        # The same payload serves both the search call (reads hits) and the aggregation call.
+        return _Resp(200, {"hits": {"hits": self._hits}, "aggregations": self._aggregations})
 
     def put(self, path: str, *, json_payload) -> _Resp:  # pragma: no cover
         return _Resp(200, {})
@@ -93,13 +102,16 @@ def _hit(score: float) -> dict[str, Any]:
     }
 
 
-def test_retrieval_mode_returns_renderable_markdown_block():
+def test_retrieval_mode_returns_typed_ayah_results_and_chart():
     response = build_search_execute_response(
         SearchExecuteRequest(
             query="mercy", filters={"surahs": [1]}, output_preferences={"top_k": 5}
         ),
         settings=_settings(),
-        adapter=_FakeAdapter(hits=[_hit(7.5)]),
+        adapter=_FakeAdapter(
+            hits=[_hit(7.5)],
+            aggregations={"surahs": {"buckets": [{"key": 1, "doc_count": 3}]}},
+        ),
     )
 
     assert response.render_schema_version == "v1"
@@ -107,13 +119,15 @@ def test_retrieval_mode_returns_renderable_markdown_block():
     assert response.metadata["corpus_snapshot_id"] == "snapshot-001"
     assert response.metadata["analysis_profile_version"] == ANALYSIS_PROFILE_VERSION
 
-    block = response.blocks[0]
-    assert block.block_type == "markdown"
-    assert block.items == []
-    content = block.payload["content"]
-    assert "Surah 1, Ayah 1" in content
-    assert "Sahih International" in content
-    assert "<mark>" not in content
+    assert [b.block_type for b in response.blocks] == ["ayah_results", "surah_distribution"]
+    item = response.blocks[0].items[0]
+    assert item.rank == 1
+    assert item.result_type == "ayah"
+    assert item.title == "Surah 1, Ayah 1"
+    assert "<mark>" in item.highlighted_text  # typed renderer keeps highlight
+    assert item.match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
+    assert item.match_metadata["content_type"] == "translation"
+    assert response.blocks[1].payload["values"] == [{"surah": 1, "value": 3}]
 
 
 def test_retrieval_confidence_reflects_absolute_score():
@@ -133,7 +147,7 @@ def test_retrieval_empty_results_warns():
         SearchExecuteRequest(query="zzz"), settings=_settings(), adapter=_FakeAdapter(hits=[])
     )
     block = response.blocks[0]
-    assert block.block_type == "markdown"
+    assert block.block_type == "ayah_results"
     assert block.items == []
     assert block.warning_text == "No lexical matches were returned."
 

@@ -11,7 +11,10 @@ from src.search.opensearch_client import (
 )
 from src.search.pipeline import RetrievalPipeline
 from src.search.response_builder import build_execute_response
-from src.search.retrievers.lexical_opensearch import LexicalRetriever
+from src.search.retrievers.lexical_opensearch import (
+    LexicalRetriever,
+    aggregate_surah_distribution,
+)
 
 
 class SearchRetrievalError(Exception):
@@ -51,6 +54,7 @@ def build_search_execute_response(
     try:
         active_adapter = adapter if adapter is not None else _build_adapter(cfg)
         candidates = RetrievalPipeline([LexicalRetriever(active_adapter, alias)]).run(query_context)
+        distribution = aggregate_surah_distribution(active_adapter, alias, query_context)
         profile = read_index_profile(active_adapter, alias)
     except OpenSearchError as exc:
         raise SearchRetrievalError(
@@ -63,6 +67,7 @@ def build_search_execute_response(
     return build_execute_response(
         request,
         candidates,
+        surah_distribution=distribution,
         provenance=_profile_provenance(profile),
         render_schema_version=cfg.render_schema_version,
         confidence_scale_k=cfg.search_confidence_scale_k,
