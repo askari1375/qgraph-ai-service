@@ -1,4 +1,4 @@
-"""Locks the skeleton contract: the package imports cleanly and every behavior stub is a *stub*.
+"""Locks the skeleton contract: the package imports cleanly and the not-yet-built behavior is a stub.
 
 When one of these is implemented, the matching assertion here should be deleted in the same change —
 that is the intended signal that the skeleton is being filled.
@@ -9,15 +9,14 @@ import importlib
 import pytest
 
 from src.api.schemas.search import SearchExecuteRequest
-from src.search.contracts import QueryContext, SearchFilters
+from src.search.contracts import QueryContext
 from src.search.indexing import builder, cli
-from src.search.pipeline import RetrievalPipeline
 from src.search.response_builder import build_execute_response
-from src.search.retrievers.lexical_opensearch import LexicalRetriever
 
 SKELETON_MODULES = [
     "src.search",
     "src.search.contracts",
+    "src.search.opensearch_client",
     "src.search.pipeline",
     "src.search.response_builder",
     "src.search.retrievers",
@@ -26,6 +25,7 @@ SKELETON_MODULES = [
     "src.search.indexing.documents",
     "src.search.indexing.normalization",
     "src.search.indexing.mapping",
+    "src.search.indexing.eval_set",
     "src.search.indexing.builder",
     "src.search.indexing.cli",
 ]
@@ -36,36 +36,14 @@ def test_module_imports(module_name):
     assert importlib.import_module(module_name) is not None
 
 
-def test_pipeline_stubs_raise_not_implemented():
-    pipeline = RetrievalPipeline(retrievers=[LexicalRetriever()])
-    qc = QueryContext(raw_query="mercy")
-    with pytest.raises(NotImplementedError):
-        pipeline.run(qc)
-    with pytest.raises(NotImplementedError):
-        pipeline._fuse([])
-
-
-def test_retriever_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        LexicalRetriever().retrieve(QueryContext(raw_query="mercy"))
-
-
 def test_response_builder_stub_raises_not_implemented():
     qc = QueryContext(raw_query="mercy")
     with pytest.raises(NotImplementedError):
         build_execute_response([], SearchExecuteRequest(query="mercy"), qc)
 
 
-def test_search_filters_compile_stubs_raise_not_implemented():
-    with pytest.raises(NotImplementedError):
-        SearchFilters.from_request_filters({})
-    with pytest.raises(NotImplementedError):
-        SearchFilters().to_opensearch_filter()
-
-
 def test_indexing_workflow_stubs_raise_not_implemented():
-    # documents / normalization / mapping are implemented; only the build/activate workflow
-    # (and the CLI that drives it) remains a stub until the activation path lands.
+    # build/activate/status (and the CLI that drives them) remain stubs until the activation path lands.
     with pytest.raises(NotImplementedError):
         builder.build_index()
     with pytest.raises(NotImplementedError):

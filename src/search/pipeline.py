@@ -26,20 +26,24 @@ class RetrievalPipeline:
         self.retrievers = retrievers
 
     def run(self, query_context: QueryContext) -> list[RetrievalCandidate]:
-        """Retrieve from every retriever, fuse, and return ranked candidates.
-
-        Not implemented yet: call ``retrieve`` on each retriever, hand the per-retriever lists to
-        :meth:`_fuse`, and return the fused ranking.
-        """
-        raise NotImplementedError("RetrievalPipeline.run is not implemented yet")
+        """Retrieve from every retriever, fuse, and return ranked candidates."""
+        results = [retriever.retrieve(query_context) for retriever in self.retrievers]
+        return self._fuse(results)
 
     def _fuse(
         self, results_by_retriever: list[list[RetrievalCandidate]]
     ) -> list[RetrievalCandidate]:
         """Combine per-retriever candidate lists into one ranking.
 
-        Pass-through today (a single retriever, so its list is returned as-is). This is the seam
+        With a single retriever this is a pass-through (its list is returned as-is). This is the seam
         where Reciprocal Rank Fusion lands the day a second retriever exists; dedup-on-fusion can
-        also key on ``canonical_content_id`` here.
+        also key on ``canonical_content_id`` here. Until then, multiple lists are simply concatenated.
         """
-        raise NotImplementedError("RetrievalPipeline._fuse is not implemented yet")
+        if not results_by_retriever:
+            return []
+        if len(results_by_retriever) == 1:
+            return results_by_retriever[0]
+        merged: list[RetrievalCandidate] = []
+        for results in results_by_retriever:
+            merged.extend(results)
+        return merged

@@ -140,3 +140,50 @@ def response_json(response: OpenSearchResponse) -> Any:
             status_code=response.status_code,
             detail={"message": str(exc)},
         ) from exc
+
+
+def search(adapter: OpenSearchAdapter, target: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Run a ``_search`` against an index or alias and return the parsed response."""
+    response = adapter.post(f"/{target}/_search", json_payload=body)
+    if response.status_code == 404:
+        raise OpenSearchError(
+            "OpenSearch index or alias is not available",
+            reason="index_not_found",
+            status_code=response.status_code,
+        )
+    raise_for_opensearch_error(response, message="OpenSearch search failed", reason="search_failed")
+    payload = response_json(response)
+    if not isinstance(payload, dict):
+        raise OpenSearchError(
+            "OpenSearch search returned malformed JSON", reason="search_response_malformed"
+        )
+    return payload
+
+
+def read_index_profile(adapter: OpenSearchAdapter, target: str) -> dict[str, Any]:
+    """Read ``mappings._meta.qgraph_index_profile`` from an index or alias.
+
+    A ``GET`` on an alias returns ``{concrete_index_name: {...}}``; the single entry is used, so this
+    works for both the serving alias and a concrete physical index.
+    """
+    response = adapter.get(f"/{target}")
+    if response.status_code == 404:
+        raise OpenSearchError(
+            "OpenSearch index or alias is not available",
+            reason="index_not_found",
+            status_code=response.status_code,
+        )
+    raise_for_opensearch_error(
+        response, message="Failed to inspect OpenSearch index", reason="index_inspect_failed"
+    )
+    payload = response_json(response)
+    if not isinstance(payload, dict) or not payload:
+        raise OpenSearchError("OpenSearch index profile is missing", reason="index_profile_missing")
+    index_payload = next(iter(payload.values()))
+    profile = None
+    if isinstance(index_payload, dict):
+        meta = index_payload.get("mappings", {}).get("_meta", {})
+        profile = meta.get("qgraph_index_profile")
+    if not isinstance(profile, dict):
+        raise OpenSearchError("OpenSearch index profile is missing", reason="index_profile_missing")
+    return profile

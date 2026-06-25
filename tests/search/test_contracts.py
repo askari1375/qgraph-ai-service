@@ -90,6 +90,6 @@ def test_query_context_rejects_empty_query():
 def test_lexical_retriever_satisfies_retriever_protocol():
     from src.search.retrievers.lexical_opensearch import LexicalRetriever
 
-    retriever = LexicalRetriever()
+    retriever = LexicalRetriever(adapter=None, target="qgraph-ayah-lexical-active")
     assert isinstance(retriever, Retriever)
     assert retriever.name == RETRIEVER_OPENSEARCH_LEXICAL
