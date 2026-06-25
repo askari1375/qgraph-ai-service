@@ -143,18 +143,49 @@ class SearchFilters(BaseModel):
     def from_request_filters(cls, raw: dict[str, Any]) -> SearchFilters:
         """Parse Django's raw request ``filters`` dict into typed filters.
 
-        Not implemented yet: tolerant coercion of the keys/aliases handled today by
-        ``_coerce_int_filter`` / ``_coerce_string_list_filter`` in ``services/opensearch_lexical.py``,
-        defaulting ``content_types`` to the general-result scope.
+        Tolerant: unknown keys are ignored and malformed values are dropped. ``content_types``
+        defaults to the general-result scope (ayah + translation) when absent or all-invalid, so
+        surah-name documents stay out of general results unless explicitly requested.
         """
-        raise NotImplementedError("SearchFilters.from_request_filters is not implemented yet")
+        if not isinstance(raw, dict):
+            raw = {}
+        kwargs: dict[str, Any] = {
+            "languages": _coerce_str_list(
+                raw, "languages", fallback_key="language_codes", casefold=True
+            ),
+            "source_ids": _coerce_str_list(raw, "source_ids", casefold=False),
+            "surah_numbers": _coerce_int_list(
+                raw, "surahs", fallback_key="surah_ids", low=1, high=114
+            ),
+            "ayah_global_min": _coerce_optional_int(raw.get("ayah_global_min")),
+            "ayah_global_max": _coerce_optional_int(raw.get("ayah_global_max")),
+        }
+        content_types = _coerce_content_types(raw.get("content_types"))
+        if content_types:
+            kwargs["content_types"] = content_types
+        return cls(**kwargs)
 
     def to_opensearch_filter(self) -> list[dict[str, Any]]:
-        """Compile to a list of OpenSearch ``bool.filter`` clauses (``terms``/``range``).
-
-        Not implemented yet: replaces ``_build_filter_clauses`` in ``services/opensearch_lexical.py``.
-        """
-        raise NotImplementedError("SearchFilters.to_opensearch_filter is not implemented yet")
+        """Compile to a list of OpenSearch ``bool.filter`` clauses (``terms``/``range``)."""
+        clauses: list[dict[str, Any]] = []
+        if self.content_types:
+            clauses.append(
+                {"terms": {"metadata.content_type": [ct.value for ct in self.content_types]}}
+            )
+        if self.languages:
+            clauses.append({"terms": {"metadata.language_code": self.languages}})
+        if self.source_ids:
+            clauses.append({"terms": {"metadata.source_id": self.source_ids}})
+        if self.surah_numbers:
+            clauses.append({"terms": {"metadata.surah_number": self.surah_numbers}})
+        ayah_range: dict[str, int] = {}
+        if self.ayah_global_min is not None:
+            ayah_range["gte"] = self.ayah_global_min
+        if self.ayah_global_max is not None:
+            ayah_range["lte"] = self.ayah_global_max
+        if ayah_range:
+            clauses.append({"range": {"metadata.ayah_global_number": ayah_range}})
+        return clauses
 
 
 class QueryContext(BaseModel):
@@ -200,3 +231,84 @@ class Retriever(Protocol):
     def retrieve(self, query_context: QueryContext) -> list[RetrievalCandidate]:
         """Return ranked candidates for ``query_context`` (rank 1 = best)."""
         ...
+
+
+# --------------------------------------------------------------------------------------------------
+# Request-filter coercion helpers (tolerant parsing of the untyped Django filters dict)
+# --------------------------------------------------------------------------------------------------
+
+
+def _coerce_content_types(raw: Any) -> list[ContentType]:
+    if not isinstance(raw, list):
+        return []
+    values: list[ContentType] = []
+    seen: set[ContentType] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        try:
+            content_type = ContentType(item.strip())
+        except ValueError:
+            continue
+        if content_type not in seen:
+            values.append(content_type)
+            seen.add(content_type)
+    return values
+
+
+def _coerce_int_list(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    fallback_key: str | None = None,
+    low: int,
+    high: int,
+) -> list[int]:
+    raw_values = raw.get(key)
+    if raw_values is None and fallback_key is not None:
+        raw_values = raw.get(fallback_key)
+    if not isinstance(raw_values, list):
+        return []
+    values: list[int] = []
+    seen: set[int] = set()
+    for value in raw_values:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value < low or value > high or value in seen:
+            continue
+        values.append(value)
+        seen.add(value)
+    return values
+
+
+def _coerce_str_list(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    fallback_key: str | None = None,
+    casefold: bool = True,
+) -> list[str]:
+    raw_values = raw.get(key)
+    if raw_values is None and fallback_key is not None:
+        raw_values = raw.get(fallback_key)
+    if not isinstance(raw_values, list):
+        return []
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        if isinstance(value, bool) or value is None:
+            continue
+        text = str(value).strip()
+        if casefold:
+            text = text.casefold()
+        if not text or text in seen:
+            continue
+        values.append(text)
+        seen.add(text)
+    return values
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
