@@ -10,7 +10,6 @@ import pytest
 
 from src.api.schemas.search import SearchExecuteRequest
 from src.search.contracts import QueryContext
-from src.search.indexing import builder, cli
 from src.search.response_builder import build_execute_response
 
 SKELETON_MODULES = [
@@ -40,15 +39,3 @@ def test_response_builder_stub_raises_not_implemented():
     qc = QueryContext(raw_query="mercy")
     with pytest.raises(NotImplementedError):
         build_execute_response([], SearchExecuteRequest(query="mercy"), qc)
-
-
-def test_indexing_workflow_stubs_raise_not_implemented():
-    # build/activate/status (and the CLI that drives them) remain stubs until the activation path lands.
-    with pytest.raises(NotImplementedError):
-        builder.build_index()
-    with pytest.raises(NotImplementedError):
-        builder.activate_index("v1")
-    with pytest.raises(NotImplementedError):
-        builder.index_status()
-    with pytest.raises(NotImplementedError):
-        cli.main([])

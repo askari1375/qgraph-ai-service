@@ -91,23 +91,27 @@ class LexicalRetriever:
         return parse_candidates(payload)
 
 
-def ensure_compatible_index(adapter: OpenSearchAdapter, target: str) -> None:
-    """Refuse to serve from an index whose build profile disagrees with the running code.
+def compatibility_mismatches(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return the build-profile fields that disagree with the running code (empty == compatible).
 
-    Compares the code-constant compatibility versions against the index ``_meta`` profile (snapshot
-    id/hash are provenance, not a compatibility gate).
+    Compares only the code-constant compatibility versions; snapshot id/hash are provenance, not a
+    compatibility gate.
     """
-    profile = read_index_profile(adapter, target)
     expected = {
         "document_schema_version": DOCUMENT_SCHEMA_VERSION,
         "normalization_profile_version": NORMALIZATION_PROFILE_VERSION,
         "analysis_profile_version": ANALYSIS_PROFILE_VERSION,
     }
-    mismatches = {
+    return {
         field: {"expected": value, "actual": profile.get(field)}
         for field, value in expected.items()
         if profile.get(field) != value
     }
+
+
+def ensure_compatible_index(adapter: OpenSearchAdapter, target: str) -> None:
+    """Refuse to serve from an index whose build profile disagrees with the running code."""
+    mismatches = compatibility_mismatches(read_index_profile(adapter, target))
     if mismatches:
         raise OpenSearchError(
             "OpenSearch index profile is incompatible with the running code",

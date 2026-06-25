@@ -1,45 +1,197 @@
 """Orchestrate an index build and its alias-swap activation.
 
-The builder is the offline workflow that turns a corpus snapshot into a *new physical index version*
-and then activates it by repointing an alias — the alias swap **is** the activation, which removes
-any hand-copied snapshot-id/hash configuration step.
+The builder turns a corpus snapshot into a *new physical index version* and activates it by repointing
+the serving alias — the alias swap **is** the activation, so there is no snapshot id/hash to copy.
 
 Build chain:
     pull snapshot (corpus_client) -> build_search_documents -> build_index_settings
-      -> create ``{name}-v{n}`` -> bulk index -> validate against the golden eval set
-      -> swap the alias to the new version (only if validation passes)
+      -> create "<prefix>-<date>-<NNN>" -> bulk index -> validate against the golden set
+      -> (optionally) swap the alias to the new version
 
-This sits on top of the existing ``OpenSearchLexicalBackend`` bulk machinery.
+``build`` never auto-activates unless asked; it prints the report and the activate command, so a build
+that fails golden-set validation never becomes the served index.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any
 
-
-def build_index(*, activate: bool = False, dry_run: bool = False) -> dict[str, Any]:
-    """Build a new physical index version from the current corpus snapshot.
-
-    Not implemented yet: create + bulk-load a fresh ``{name}-v{n}`` index, validate it against the
-    eval set, and (when ``activate``) swap the alias to it. ``dry_run`` reports the plan without
-    writing. Returns a build report (version, document count, validation summary).
-    """
-    raise NotImplementedError("indexing.builder.build_index is not implemented yet")
-
-
-def activate_index(version: str) -> dict[str, Any]:
-    """Point the serving alias at an already-built index version (atomic swap).
-
-    Not implemented yet: validate the target version exists and is healthy, then move the alias.
-    This is the whole of "activation" — no configuration to edit, no app restart.
-    """
-    raise NotImplementedError("indexing.builder.activate_index is not implemented yet")
+from src.config import Settings, get_settings
+from src.search import opensearch_client as osc
+from src.search.contracts import QueryContext, SearchFilters
+from src.search.indexing.documents import build_document_source, build_search_documents
+from src.search.indexing.eval_set import GOLDEN_QUERIES
+from src.search.indexing.mapping import build_index_profile, build_index_settings
+from src.search.opensearch_client import OpenSearchAdapter, OpenSearchError
+from src.search.retrievers.lexical_opensearch import (
+    build_search_body,
+    compatibility_mismatches,
+    ensure_compatible_index,
+)
+from src.services.corpus_client import build_django_corpus_client
 
 
-def index_status() -> dict[str, Any]:
-    """Report which index version the alias currently serves and the available versions.
+def build_index(
+    *,
+    settings: Settings | None = None,
+    adapter: OpenSearchAdapter | None = None,
+    activate: bool = False,
+    dry_run: bool = False,
+    languages: Sequence[str] | None = None,
+    surahs: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Build a new physical index version from the current corpus snapshot."""
+    settings = settings or get_settings()
+    snapshot = build_django_corpus_client(settings).fetch_quran_snapshot(
+        translation_languages=languages, surah_numbers=surahs
+    )
+    documents = build_search_documents(snapshot)
+    if not documents:
+        raise OpenSearchError("Corpus snapshot produced no documents", reason="empty_corpus")
 
-    Not implemented yet: read the alias target and each version's ``_meta`` profile so provenance
-    comes from the index, not from configuration.
-    """
-    raise NotImplementedError("indexing.builder.index_status is not implemented yet")
+    adapter = adapter or _adapter(settings)
+    physical_index = _next_physical_index_name(adapter, settings.opensearch_index_prefix)
+    profile_meta = build_index_profile(
+        index_name=physical_index, snapshot=snapshot, documents=documents
+    )
+    report: dict[str, Any] = {
+        "index": physical_index,
+        "alias": settings.opensearch_alias,
+        "document_count": len(documents),
+        "corpus_snapshot_id": snapshot.corpus_snapshot_id,
+    }
+    if dry_run:
+        report["dry_run"] = True
+        return report
+
+    osc.create_index(adapter, physical_index, build_index_settings(profile_meta))
+    osc.bulk_index(
+        adapter, physical_index, ((doc.id, build_document_source(doc)) for doc in documents)
+    )
+    osc.refresh(adapter, physical_index)
+
+    validation = _validate_golden_set(adapter, physical_index)
+    report["validation"] = validation
+    report["ok"] = not validation["hard_failures"]
+    report["activated"] = False
+    if report["ok"] and activate:
+        _swap(adapter, settings.opensearch_alias, physical_index)
+        report["activated"] = True
+    return report
+
+
+def activate_index(
+    physical_index: str,
+    *,
+    settings: Settings | None = None,
+    adapter: OpenSearchAdapter | None = None,
+    delete_old: bool = False,
+) -> dict[str, Any]:
+    """Point the serving alias at an already-built index version (atomic swap)."""
+    settings = settings or get_settings()
+    adapter = adapter or _adapter(settings)
+    alias = settings.opensearch_alias
+    ensure_compatible_index(adapter, physical_index)
+    previous = [index for index in osc.get_alias_targets(adapter, alias) if index != physical_index]
+    osc.swap_alias(adapter, alias, physical_index, remove_indices=previous)
+    if delete_old:
+        for index in previous:
+            osc.delete_index(adapter, index)
+    return {
+        "alias": alias,
+        "active_index": physical_index,
+        "previous_indices": previous,
+        "deleted_old": delete_old,
+        "profile": osc.read_index_profile(adapter, alias),
+    }
+
+
+def index_status(
+    *,
+    settings: Settings | None = None,
+    adapter: OpenSearchAdapter | None = None,
+) -> dict[str, Any]:
+    """Report the alias target, its build profile, and the code-compatibility result."""
+    settings = settings or get_settings()
+    adapter = adapter or _adapter(settings)
+    alias = settings.opensearch_alias
+    targets = osc.get_alias_targets(adapter, alias)
+    status: dict[str, Any] = {"alias": alias, "active_indices": targets}
+    if not targets:
+        status["compatible"] = None
+        return status
+    profile = osc.read_index_profile(adapter, alias)
+    mismatches = compatibility_mismatches(profile)
+    status["profile"] = profile
+    status["compatible"] = not mismatches
+    if mismatches:
+        status["mismatches"] = mismatches
+    return status
+
+
+def _adapter(settings: Settings) -> OpenSearchAdapter:
+    return osc.build_opensearch_adapter(
+        url=settings.opensearch_url,
+        timeout_seconds=settings.opensearch_timeout_seconds,
+        username=settings.opensearch_username,
+        password=settings.opensearch_password,
+        verify=settings.opensearch_ca_cert_path or settings.opensearch_verify_certs,
+    )
+
+
+def _next_physical_index_name(adapter: OpenSearchAdapter, prefix: str) -> str:
+    date = datetime.now(timezone.utc).strftime("%Y%m%d")
+    base = f"{prefix}-{date}"
+    suffixes = []
+    for name in osc.list_index_names(adapter, f"{base}-*"):
+        tail = name[len(base) + 1 :]
+        if tail.isdigit():
+            suffixes.append(int(tail))
+    sequence = (max(suffixes) + 1) if suffixes else 1
+    return f"{base}-{sequence:03d}"
+
+
+def _swap(adapter: OpenSearchAdapter, alias: str, physical_index: str) -> None:
+    previous = [index for index in osc.get_alias_targets(adapter, alias) if index != physical_index]
+    osc.swap_alias(adapter, alias, physical_index, remove_indices=previous)
+
+
+def _validate_golden_set(adapter: OpenSearchAdapter, index: str) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    hard_failures: list[str] = []
+    soft_misses: list[str] = []
+    for case in GOLDEN_QUERIES:
+        query_context = QueryContext(
+            raw_query=case.query,
+            top_k=case.top_k,
+            filters=SearchFilters(content_types=list(case.scope)),
+        )
+        payload = osc.search(adapter, index, build_search_body(query_context))
+        found = _canonical_ids(payload)
+        missing = [cid for cid in case.must_include_canonical_ids if cid not in found]
+        cases.append(
+            {
+                "id": case.id,
+                "query": case.query,
+                "status": case.status.value,
+                "hit_count": len(found),
+                "missing": missing,
+            }
+        )
+        if missing:
+            (hard_failures if case.is_hard else soft_misses).append(case.id)
+    return {"cases": cases, "hard_failures": hard_failures, "soft_misses": soft_misses}
+
+
+def _canonical_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for hit in payload.get("hits", {}).get("hits", []):
+        if not isinstance(hit, dict):
+            continue
+        source = hit.get("_source")
+        canonical = source.get("canonical_content_id") if isinstance(source, dict) else None
+        if canonical:
+            ids.append(str(canonical))
+    return ids

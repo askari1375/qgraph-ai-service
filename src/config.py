@@ -37,6 +37,10 @@ class Settings(BaseSettings):
 
     opensearch_url: str = ""
     opensearch_index_name: str = "qgraph-ayah-lexical-v1"
+    # The serving alias the app queries; activation repoints it at a new physical index version.
+    opensearch_alias: str = "qgraph-ayah-lexical-active"
+    # Physical index versions are named "<prefix>-<YYYYMMDD>-<NNN>".
+    opensearch_index_prefix: str = "qgraph-ayah-lexical"
     opensearch_timeout_seconds: float = 10.0
     # Basic-auth credentials for a security-enabled OpenSearch. Empty username =>
     # no auth (plain dev cluster with the security plugin disabled).
