@@ -1,8 +1,9 @@
 """OpenSearch index settings, analyzers, and mappings — the "index strategy".
 
 The primary ``content_ar``/``content_fa`` fields use custom **normalize-don't-stem** analyzers
-(normalize alef/yeh/teh-marbuta, strip harakat/tatweel, fold ZWNJ for Persian) so load-bearing
-Quranic particles (لا/ما/إن) survive. The built-in ``arabic``/``persian`` stemmed analyzers are kept
+(normalize alef/yeh/teh-marbuta, strip harakat/tatweel and the superscript/dagger alif U+0670, fold
+ZWNJ for Persian) so load-bearing Quranic particles (لا/ما/إن) survive while the bare modern spelling
+(الرحمن) matches the Quranic orthography (الرحمٰن). The built-in ``arabic``/``persian`` stemmed analyzers are kept
 only on the lower-value ``.stemmed`` sub-fields for opt-in recall. English keeps the built-in stemmed
 ``english`` analyzer as primary (better translation recall) with an ``.exact`` precision sub-field —
 an intentional, documented asymmetry.
@@ -23,13 +24,20 @@ from src.search.indexing.normalization import (
     NORMALIZATION_PROFILE_VERSION,
 )
 
-ANALYSIS_PROFILE_VERSION = "2026-06-24.v1"
+ANALYSIS_PROFILE_VERSION = "2026-06-25.v1"
 LEXICAL_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_lexical_index_profile.v2"
 OPEN_SEARCH_BACKEND_NAME = "open_search"
 
 # ZWNJ -> space, so Persian compound words split on the half-space the same way the Python normalizer
 # folds them.
 _ZWNJ_TO_SPACE_MAPPING = "‌=> "
+
+# Strip the superscript/dagger alif (U+0670). It is a combining mark like the harakat the token
+# filters already drop, but ``arabic_normalization`` leaves it in place; removing it pre-tokenization
+# folds the Quranic spelling (الرحمٰن) onto the bare modern one (الرحمن), matching the Python
+# normalizer. The ``.stemmed`` recall sub-fields still fold it onto a full alif, so the full-alif
+# spelling (الرحمان) keeps matching too.
+_DAGGER_ALIF_TO_EMPTY = "ٰ=>"
 
 
 def build_index_settings(profile_meta: dict[str, Any]) -> dict[str, Any]:
@@ -43,17 +51,22 @@ def build_index_settings(profile_meta: dict[str, Any]) -> dict[str, Any]:
             "index": {"number_of_shards": 1, "number_of_replicas": 0},
             "analysis": {
                 "char_filter": {
-                    "zwnj_to_space": {"type": "mapping", "mappings": [_ZWNJ_TO_SPACE_MAPPING]}
+                    "zwnj_to_space": {"type": "mapping", "mappings": [_ZWNJ_TO_SPACE_MAPPING]},
+                    "dagger_alif_strip": {
+                        "type": "mapping",
+                        "mappings": [_DAGGER_ALIF_TO_EMPTY],
+                    },
                 },
                 "analyzer": {
                     "arabic_normalized": {
                         "type": "custom",
+                        "char_filter": ["dagger_alif_strip"],
                         "tokenizer": "standard",
                         "filter": ["lowercase", "decimal_digit", "arabic_normalization"],
                     },
                     "persian_normalized": {
                         "type": "custom",
-                        "char_filter": ["zwnj_to_space"],
+                        "char_filter": ["dagger_alif_strip", "zwnj_to_space"],
                         "tokenizer": "standard",
                         "filter": [
                             "lowercase",

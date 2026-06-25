@@ -59,7 +59,16 @@ def test_custom_analyzers_have_no_stemmer_or_stopword_filter():
         assert not any("stem" in f for f in filters)
         assert not any("stop" in f for f in filters)
     assert "persian_normalization" in analyzers["persian_normalized"]["filter"]
-    assert analyzers["persian_normalized"]["char_filter"] == ["zwnj_to_space"]
+    assert analyzers["persian_normalized"]["char_filter"] == ["dagger_alif_strip", "zwnj_to_space"]
+
+
+def test_custom_analyzers_strip_the_dagger_alif():
+    # U+0670 is stripped pre-tokenization on both primary analyzers so the bare modern spelling
+    # (الرحمن) matches the Quranic orthography (الرحمٰن), mirroring the Python normalizer.
+    analysis = _settings()["settings"]["analysis"]
+    assert analysis["char_filter"]["dagger_alif_strip"]["mappings"] == ["ٰ=>"]
+    assert "dagger_alif_strip" in analysis["analyzer"]["arabic_normalized"]["char_filter"]
+    assert "dagger_alif_strip" in analysis["analyzer"]["persian_normalized"]["char_filter"]
 
 
 def test_english_is_stemmed_primary_with_exact_subfield():

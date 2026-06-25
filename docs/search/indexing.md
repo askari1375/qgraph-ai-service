@@ -16,6 +16,15 @@ Each physical index stores its build profile under `mappings._meta.qgraph_index_
 snapshot id/hash (provenance) plus the code-compatibility versions (`document_schema_version`,
 `normalization_profile_version`, `analysis_profile_version`).
 
+## Text analysis
+
+The primary `content_ar`/`content_fa` fields use custom normalize-don't-stem analyzers. As part of
+normalization they strip the superscript/dagger alif (U+0670) before tokenizing, so the bare modern
+spelling (`الرحمن`) matches the Quranic orthography (`الرحمٰن`) — mirroring the Python normalizer. The
+lower-boost `.stemmed` recall sub-fields use the built-in `arabic`/`persian` analyzers, which fold the
+dagger alif onto a full alif, so the full-alif spelling (`الرحمان`) keeps matching too. Changing the
+analyzers requires bumping `ANALYSIS_PROFILE_VERSION` and rebuilding (see Drift protection below).
+
 ## Commands
 
 ```bash
