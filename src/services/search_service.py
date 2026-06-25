@@ -44,17 +44,32 @@ def build_search_execute_response(
     ``SearchRetrievalError`` (never as fake results). Tests inject a fake ``adapter``.
     """
     cfg = settings if settings is not None else get_settings()
-    query_context = QueryContext(
-        raw_query=request.query,
-        filters=SearchFilters.from_request_filters(request.filters),
-        top_k=_resolve_top_k(request.output_preferences),
-        collapse=True,
+    filters = SearchFilters.from_request_filters(request.filters)
+    top_k = _resolve_top_k(request.output_preferences)
+    # Arabic verses and translations are retrieved in separate scoped queries so each result block is
+    # independently populated and ranked, and the distribution chart reflects the verses alone (stable
+    # regardless of the translation control). Single-content-type scopes don't need collapse.
+    ayah_context = QueryContext(
+        raw_query=request.query, filters=filters.quran_ayah_scope(), top_k=top_k, collapse=False
     )
     alias = cfg.opensearch_alias
     try:
         active_adapter = adapter if adapter is not None else _build_adapter(cfg)
-        candidates = RetrievalPipeline([LexicalRetriever(active_adapter, alias)]).run(query_context)
-        distribution = aggregate_surah_distribution(active_adapter, alias, query_context)
+        pipeline = RetrievalPipeline([LexicalRetriever(active_adapter, alias)])
+        ayah_candidates = pipeline.run(ayah_context)
+        translation_candidates = (
+            pipeline.run(
+                QueryContext(
+                    raw_query=request.query,
+                    filters=filters.translation_scope(),
+                    top_k=top_k,
+                    collapse=False,
+                )
+            )
+            if filters.include_translations
+            else []
+        )
+        distribution = aggregate_surah_distribution(active_adapter, alias, ayah_context)
         profile = read_index_profile(active_adapter, alias)
     except OpenSearchError as exc:
         raise SearchRetrievalError(
@@ -66,7 +81,8 @@ def build_search_execute_response(
 
     return build_execute_response(
         request,
-        candidates,
+        ayah_candidates=ayah_candidates,
+        translation_candidates=translation_candidates,
         surah_distribution=distribution,
         provenance=_profile_provenance(profile),
         render_schema_version=cfg.render_schema_version,

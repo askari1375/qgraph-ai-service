@@ -43,17 +43,31 @@ class _Resp:
         return self._payload
 
 
+def _body_content_types(body: dict[str, Any]) -> set[str]:
+    clauses = body.get("query", {}).get("bool", {}).get("filter", [])
+    found: set[str] = set()
+    for clause in clauses:
+        terms = clause.get("terms", {}) if isinstance(clause, dict) else {}
+        if "metadata.content_type" in terms:
+            found.update(terms["metadata.content_type"])
+    return found
+
+
 class _FakeAdapter:
+    """Routes each scoped query by its content_type filter (Arabic vs translation vs aggregation)."""
+
     def __init__(
         self,
         *,
         profile: dict[str, Any] | None = None,
-        hits=None,
+        ayah_hits=None,
+        translation_hits=None,
         aggregations=None,
         get_status: int = 200,
     ):
         self._profile = profile if profile is not None else _profile()
-        self._hits = hits if hits is not None else []
+        self._ayah_hits = ayah_hits or []
+        self._translation_hits = translation_hits or []
         self._aggregations = aggregations or {}
         self._get_status = get_status
 
@@ -70,8 +84,13 @@ class _FakeAdapter:
         )
 
     def post(self, path: str, *, json_payload=None, content=None, headers=None) -> _Resp:
-        # The same payload serves both the search call (reads hits) and the aggregation call.
-        return _Resp(200, {"hits": {"hits": self._hits}, "aggregations": self._aggregations})
+        body = json_payload or {}
+        if "aggs" in body:
+            return _Resp(200, {"hits": {"hits": []}, "aggregations": self._aggregations})
+        content_types = _body_content_types(body)
+        if "translation" in content_types and "quran_ayah" not in content_types:
+            return _Resp(200, {"hits": {"hits": self._translation_hits}})
+        return _Resp(200, {"hits": {"hits": self._ayah_hits}})
 
     def put(self, path: str, *, json_payload) -> _Resp:  # pragma: no cover
         return _Resp(200, {})
@@ -80,12 +99,33 @@ class _FakeAdapter:
         return _Resp(200, {})
 
 
-def _hit(score: float) -> dict[str, Any]:
+def _arabic_hit(score: float) -> dict[str, Any]:
     return {
-        "_id": "ayah:1:1:translation:en-sahih",
+        "_id": "ayah:1:1:ar",
         "_score": score,
         "_source": {
-            "id": "ayah:1:1:translation:en-sahih",
+            "id": "ayah:1:1:ar",
+            "canonical_content_id": "ayah:1:1",
+            "content_ar": "بسم الله الرحمن الرحيم",
+            "metadata": {
+                "content_type": "quran_ayah",
+                "surah_number": 1,
+                "ayah_number": 1,
+                "ayah_global_number": 1,
+                "language_code": "ar",
+                "source_name": "Quran Arabic",
+            },
+        },
+        "highlight": {"content_ar": ["بسم الله <mark>الرحمن</mark> الرحيم"]},
+    }
+
+
+def _translation_hit(score: float, language_code: str = "en") -> dict[str, Any]:
+    return {
+        "_id": f"ayah:1:1:translation:{language_code}-sahih",
+        "_score": score,
+        "_source": {
+            "id": f"ayah:1:1:translation:{language_code}-sahih",
             "canonical_content_id": "ayah:1:1",
             "content_en": "In the name of Allah, the Entirely Merciful",
             "metadata": {
@@ -93,8 +133,8 @@ def _hit(score: float) -> dict[str, Any]:
                 "surah_number": 1,
                 "ayah_number": 1,
                 "ayah_global_number": 1,
-                "language_code": "en",
-                "source_id": "en-sahih",
+                "language_code": language_code,
+                "source_id": f"{language_code}-sahih",
                 "source_name": "Sahih International",
             },
         },
@@ -102,41 +142,62 @@ def _hit(score: float) -> dict[str, Any]:
     }
 
 
-def test_retrieval_mode_returns_typed_ayah_results_and_chart():
+def test_retrieval_groups_chart_arabic_and_translation_blocks():
     response = build_search_execute_response(
         SearchExecuteRequest(
             query="mercy", filters={"surahs": [1]}, output_preferences={"top_k": 5}
         ),
         settings=_settings(),
         adapter=_FakeAdapter(
-            hits=[_hit(7.5)],
+            ayah_hits=[_arabic_hit(9.0)],
+            translation_hits=[_translation_hit(7.5)],
             aggregations={"surahs": {"buckets": [{"key": 1, "doc_count": 3}]}},
         ),
     )
 
-    assert response.render_schema_version == "v1"
     assert response.metadata["backend"] == "open_search"
-    assert response.metadata["corpus_snapshot_id"] == "snapshot-001"
     assert response.metadata["analysis_profile_version"] == ANALYSIS_PROFILE_VERSION
 
-    assert [b.block_type for b in response.blocks] == ["ayah_results", "surah_distribution"]
-    item = response.blocks[0].items[0]
-    assert item.rank == 1
-    assert item.result_type == "ayah"
-    assert item.title == "Surah 1, Ayah 1"
-    assert "<mark>" in item.highlighted_text  # typed renderer keeps highlight
-    assert item.match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
-    assert item.match_metadata["content_type"] == "translation"
-    assert response.blocks[1].payload["values"] == [{"surah": 1, "value": 3}]
+    assert [b.block_type for b in response.blocks] == [
+        "surah_distribution",
+        "ayah_results",
+        "ayah_results",
+    ]
+    assert [b.title for b in response.blocks] == [
+        "Where this appears",
+        "Quran",
+        "English translations",
+    ]
+    assert response.blocks[0].payload["values"] == [{"surah": 1, "value": 3}]
+
+    arabic_item = response.blocks[1].items[0]
+    assert arabic_item.match_metadata["content_type"] == "quran_ayah"
+    assert "<mark>" in arabic_item.highlighted_text
+
+    english_item = response.blocks[2].items[0]
+    assert english_item.match_metadata["content_type"] == "translation"
+    assert english_item.match_metadata["document_id"] == "ayah:1:1:translation:en-sahih"
+
+
+def test_include_translations_false_omits_translation_block():
+    response = build_search_execute_response(
+        SearchExecuteRequest(query="mercy", filters={"include_translations": False}),
+        settings=_settings(),
+        adapter=_FakeAdapter(
+            ayah_hits=[_arabic_hit(9.0)], translation_hits=[_translation_hit(7.5)]
+        ),
+    )
+    assert [b.block_type for b in response.blocks] == ["ayah_results"]
+    assert response.blocks[0].title == "Quran"
 
 
 def test_retrieval_confidence_reflects_absolute_score():
     request = SearchExecuteRequest(query="mercy")
     weak = build_search_execute_response(
-        request, settings=_settings(), adapter=_FakeAdapter(hits=[_hit(0.5)])
+        request, settings=_settings(), adapter=_FakeAdapter(ayah_hits=[_arabic_hit(0.5)])
     )
     strong = build_search_execute_response(
-        request, settings=_settings(), adapter=_FakeAdapter(hits=[_hit(40.0)])
+        request, settings=_settings(), adapter=_FakeAdapter(ayah_hits=[_arabic_hit(40.0)])
     )
     assert 0.0 < weak.overall_confidence < 0.1
     assert weak.overall_confidence < strong.overall_confidence < 1.0
@@ -144,7 +205,7 @@ def test_retrieval_confidence_reflects_absolute_score():
 
 def test_retrieval_empty_results_warns():
     response = build_search_execute_response(
-        SearchExecuteRequest(query="zzz"), settings=_settings(), adapter=_FakeAdapter(hits=[])
+        SearchExecuteRequest(query="zzz"), settings=_settings(), adapter=_FakeAdapter()
     )
     block = response.blocks[0]
     assert block.block_type == "ayah_results"

@@ -5,7 +5,7 @@ from src.search.response_builder import build_execute_response
 _PROVENANCE = {"corpus_snapshot_id": "snapshot-001", "index_id": "qgraph-ayah-lexical-20260625-002"}
 
 
-def _candidate(rank: int, score: float, **overrides) -> RetrievalCandidate:
+def _ayah(rank: int, score: float, **overrides) -> RetrievalCandidate:
     values = {
         "document_id": f"ayah:1:{rank}:ar",
         "canonical_content_id": f"ayah:1:{rank}",
@@ -26,10 +26,35 @@ def _candidate(rank: int, score: float, **overrides) -> RetrievalCandidate:
     return RetrievalCandidate(**values)
 
 
-def _build(candidates, *, surah_distribution=None):
+def _translation(rank: int, score: float, language_code: str, **overrides) -> RetrievalCandidate:
+    metadata = {
+        "surah_number": 1,
+        "ayah_number": rank,
+        "language_code": language_code,
+        "source_id": f"{language_code}-source",
+        "source_name": f"{language_code} source",
+    }
+    metadata.update(overrides.pop("metadata", {}))
+    values = {
+        "document_id": f"ayah:1:{rank}:translation:{language_code}-source",
+        "canonical_content_id": f"ayah:1:{rank}",
+        "content_type": ContentType.TRANSLATION,
+        "retriever": "opensearch_lexical",
+        "score": score,
+        "rank": rank,
+        "text": "In the name of Allah",
+        "highlighted_text": "In the name of <mark>Allah</mark>",
+        "metadata": metadata,
+    }
+    values.update(overrides)
+    return RetrievalCandidate(**values)
+
+
+def _build(ayah_candidates=None, *, translation_candidates=None, surah_distribution=None):
     return build_execute_response(
         SearchExecuteRequest(query="الرحمن"),
-        candidates,
+        ayah_candidates=ayah_candidates or [],
+        translation_candidates=translation_candidates or [],
         surah_distribution=surah_distribution or [],
         provenance=_PROVENANCE,
         render_schema_version="v1",
@@ -37,10 +62,12 @@ def _build(candidates, *, surah_distribution=None):
     )
 
 
-def test_renders_typed_ayah_results_block():
-    response = _build([_candidate(1, 9.0)])
+def test_renders_typed_arabic_ayah_results_block():
+    response = _build([_ayah(1, 9.0)])
     block = response.blocks[0]
     assert block.block_type == "ayah_results"
+    assert block.title == "Quran"
+    assert block.payload["language_code"] == "ar"
     assert response.render_schema_version == "v1"
     assert response.metadata["backend"] == "open_search"
     assert response.metadata["corpus_snapshot_id"] == "snapshot-001"
@@ -58,14 +85,53 @@ def test_renders_typed_ayah_results_block():
 
 
 def test_item_ranks_are_unique_and_scores_normalized():
-    block = _build([_candidate(1, 9.0), _candidate(2, 3.0)]).blocks[0]
+    block = _build([_ayah(1, 9.0), _ayah(2, 3.0)]).blocks[0]
     assert [i.rank for i in block.items] == [1, 2]
     assert block.items[0].score == 1.0
     assert block.items[1].score == 3.0 / 9.0
 
 
+def test_blocks_are_ordered_chart_then_arabic_then_per_language_translations():
+    response = _build(
+        [_ayah(1, 9.0)],
+        translation_candidates=[
+            _translation(1, 8.0, "en"),
+            _translation(2, 7.0, "fa"),
+            _translation(3, 6.0, "en"),
+        ],
+        surah_distribution=[{"surah": 1, "value": 3}],
+    )
+    assert [b.order for b in response.blocks] == [0, 1, 2, 3]
+    assert [b.block_type for b in response.blocks] == [
+        "surah_distribution",
+        "ayah_results",
+        "ayah_results",
+        "ayah_results",
+    ]
+    assert [b.title for b in response.blocks] == [
+        "Where this appears",
+        "Quran",
+        "English translations",
+        "Persian translations",
+    ]
+    english = response.blocks[2]
+    assert english.payload["language_code"] == "en"
+    # The two English translations are grouped together and re-ranked within the block.
+    assert [i.rank for i in english.items] == [1, 2]
+    assert all(i.match_metadata["language_code"] == "en" for i in english.items)
+    persian = response.blocks[3]
+    assert persian.payload["language_code"] == "fa"
+    assert [i.match_metadata["language_code"] for i in persian.items] == ["fa"]
+
+
+def test_translations_excluded_when_none_retrieved():
+    response = _build([_ayah(1, 9.0)], translation_candidates=[])
+    assert [b.block_type for b in response.blocks] == ["ayah_results"]
+    assert response.blocks[0].title == "Quran"
+
+
 def test_surah_name_item_uses_surah_reference():
-    candidate = _candidate(
+    candidate = _ayah(
         1,
         5.0,
         content_type=ContentType.SURAH_NAME,
@@ -78,21 +144,21 @@ def test_surah_name_item_uses_surah_reference():
     assert item.title == "Surah 2"
 
 
-def test_distribution_block_appended_when_present():
-    response = _build([_candidate(1, 9.0)], surah_distribution=[{"surah": 1, "value": 3}])
-    assert [b.block_type for b in response.blocks] == ["ayah_results", "surah_distribution"]
-    chart = response.blocks[1]
-    assert chart.order == 1
+def test_no_distribution_block_when_empty():
+    response = _build([_ayah(1, 9.0)], surah_distribution=[])
+    assert [b.block_type for b in response.blocks] == ["ayah_results"]
+
+
+def test_distribution_block_is_first_when_present():
+    response = _build([_ayah(1, 9.0)], surah_distribution=[{"surah": 1, "value": 3}])
+    chart = response.blocks[0]
+    assert chart.block_type == "surah_distribution"
+    assert chart.order == 0
     assert chart.payload["values"] == [{"surah": 1, "value": 3}]
     assert chart.payload["max_value"] == 3
 
 
-def test_no_distribution_block_when_empty():
-    response = _build([_candidate(1, 9.0)], surah_distribution=[])
-    assert [b.block_type for b in response.blocks] == ["ayah_results"]
-
-
-def test_empty_candidates_warns():
+def test_empty_candidates_warns_on_arabic_block():
     response = _build([])
     block = response.blocks[0]
     assert block.block_type == "ayah_results"
@@ -101,7 +167,7 @@ def test_empty_candidates_warns():
     assert response.overall_confidence == 0.0
 
 
-def test_confidence_reflects_top_absolute_score():
-    weak = _build([_candidate(1, 0.5)]).overall_confidence
-    strong = _build([_candidate(1, 40.0)]).overall_confidence
-    assert 0.0 < weak < strong < 1.0
+def test_confidence_reflects_top_absolute_score_across_groups():
+    weak = _build([_ayah(1, 0.5)]).overall_confidence
+    strong = _build([_ayah(1, 0.5)], translation_candidates=[_translation(1, 40.0, "en")])
+    assert 0.0 < weak < strong.overall_confidence < 1.0
