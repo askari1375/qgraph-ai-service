@@ -1,17 +1,38 @@
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 JsonObject = dict[str, Any]
 SearchMode = Literal["sync", "async"]
-SearchJobStatus = Literal["queued", "running", "succeeded", "failed", "canceled"]
+
+
+class RequesterContext(BaseModel):
+    """Minimal requester facts the planner uses to choose a response policy.
+
+    Django builds this from the request's authentication state. It is kept
+    deliberately small — only the real, current signal (authenticated vs. guest)
+    — so that richer user-tier data is added here only when a near-term policy
+    actually needs it.
+    """
+
+    is_authenticated: bool = False
+    is_guest: bool = True
+
+    @classmethod
+    def from_context(cls, context: JsonObject | None) -> "RequesterContext":
+        requester = context.get("requester") if isinstance(context, dict) else None
+        if not isinstance(requester, dict):
+            return cls()
+        is_authenticated = bool(requester.get("is_authenticated", False))
+        is_guest = bool(requester.get("is_guest", not is_authenticated))
+        return cls(is_authenticated=is_authenticated, is_guest=is_guest)
 
 
 class SearchPlanRequest(BaseModel):
     query: str = Field(min_length=1)
     filters: JsonObject = Field(default_factory=dict)
     output_preferences: JsonObject = Field(default_factory=dict)
+    context: JsonObject = Field(default_factory=dict)
 
 
 class SearchPlanResponse(BaseModel):
@@ -88,27 +109,3 @@ class SearchJobCreateRequest(BaseModel):
     context: JsonObject = Field(default_factory=dict)
     idempotency_key: str = Field(min_length=1, max_length=128)
     client_ref: SearchJobClientRef = Field(default_factory=SearchJobClientRef)
-
-
-class SearchJobCreateResponse(BaseModel):
-    job_id: str
-    status: SearchJobStatus
-    created_at: datetime
-    poll_after_seconds: int = Field(ge=0)
-
-
-class SearchJobProgress(BaseModel):
-    stage: str
-    percent: int = Field(ge=0, le=100)
-
-
-class SearchJobStatusResponse(BaseModel):
-    job_id: str
-    status: SearchJobStatus
-    created_at: datetime
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    poll_after_seconds: int = Field(ge=0)
-    result_available: bool
-    error: JsonObject | None = None
-    progress: SearchJobProgress

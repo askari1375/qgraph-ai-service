@@ -1,22 +1,33 @@
-from src.services.planning import ALLOWED_MODES, choose_planning_mode
+from src.api.schemas.search import RequesterContext, SearchPlanRequest
+from src.services.planning import POLICY_LABEL, build_planning_response, choose_planning_mode
 
 
-def test_planning_allowed_modes_are_fixed():
-    assert set(ALLOWED_MODES) == {"sync", "async"}
+def test_choose_planning_mode_is_sync_for_guest():
+    requester = RequesterContext(is_authenticated=False, is_guest=True)
+    assert choose_planning_mode(requester) == "sync"
 
 
-def test_choose_planning_mode_returns_only_allowed_values():
-    for query in ["verses about patience", "mercy", "justice", "light"]:
-        assert choose_planning_mode(query) in ALLOWED_MODES
+def test_choose_planning_mode_is_sync_for_authenticated_user():
+    requester = RequesterContext(is_authenticated=True, is_guest=False)
+    assert choose_planning_mode(requester) == "sync"
 
 
-def test_choose_planning_mode_is_deterministic_for_query():
-    assert choose_planning_mode("verses about patience") == choose_planning_mode(
-        "verses about patience"
+def test_build_planning_response_uses_real_policy_label():
+    response = build_planning_response(SearchPlanRequest(query="mercy"))
+    assert response.mode == "sync"
+    assert response.policy_label == POLICY_LABEL
+    assert response.policy_label != "mock_v1"
+
+
+def test_build_planning_response_defaults_to_guest_without_context():
+    response = build_planning_response(SearchPlanRequest(query="mercy"))
+    assert response.policy_snapshot["requester"] == {"is_authenticated": False, "is_guest": True}
+
+
+def test_build_planning_response_echoes_requester_context():
+    request = SearchPlanRequest(
+        query="mercy",
+        context={"requester": {"is_authenticated": True, "is_guest": False}},
     )
-
-
-def test_choose_planning_mode_supports_mock_mode_override():
-    assert choose_planning_mode("verses about patience", {"mock_mode": "sync"}) == "sync"
-    assert choose_planning_mode("justice", {"mock_mode": "async"}) == "async"
-    assert choose_planning_mode("justice", {"mock_mode": "invalid"}) == "sync"
+    response = build_planning_response(request)
+    assert response.policy_snapshot["requester"] == {"is_authenticated": True, "is_guest": False}

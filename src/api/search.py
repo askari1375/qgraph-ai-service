@@ -4,15 +4,12 @@ from src.api.schemas.search import (
     SearchExecuteRequest,
     SearchExecuteResponse,
     SearchJobCreateRequest,
-    SearchJobCreateResponse,
-    SearchJobStatusResponse,
     SearchPlanRequest,
     SearchPlanResponse,
 )
 from src.services.search_jobs import (
-    create_search_job,
-    get_search_job_result,
-    get_search_job_status,
+    ASYNC_SEARCH_NOT_IMPLEMENTED_MESSAGE,
+    ASYNC_SEARCH_NOT_IMPLEMENTED_REASON,
 )
 from src.services.planning import build_planning_response
 from src.services.search_service import SearchRetrievalError, build_search_execute_response
@@ -33,47 +30,31 @@ def search_execute(payload: SearchExecuteRequest) -> SearchExecuteResponse:
         raise _search_retrieval_http_error(exc) from exc
 
 
-@router.post(
-    "/jobs",
-    response_model=SearchJobCreateResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def search_job_create(payload: SearchJobCreateRequest) -> SearchJobCreateResponse:
-    try:
-        return create_search_job(payload)
-    except SearchRetrievalError as exc:
-        raise _search_retrieval_http_error(exc) from exc
+# Async search jobs are not implemented (the AI service serves synchronous retrieval-only
+# search). The routes are kept as a seam but fail loudly rather than simulating progress.
+@router.post("/jobs")
+def search_job_create(payload: SearchJobCreateRequest) -> None:
+    raise _async_not_implemented_http_error()
 
 
-@router.get("/jobs/{job_id}", response_model=SearchJobStatusResponse)
-def search_job_status(job_id: str) -> SearchJobStatusResponse:
-    job_status = get_search_job_status(job_id)
-    if job_status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": "Search job not found", "job_id": job_id},
-        )
-    return job_status
+@router.get("/jobs/{job_id}")
+def search_job_status(job_id: str) -> None:
+    raise _async_not_implemented_http_error()
 
 
-@router.get("/jobs/{job_id}/result", response_model=SearchExecuteResponse)
-def search_job_result(job_id: str) -> SearchExecuteResponse:
-    lookup = get_search_job_result(job_id)
-    if lookup.status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": "Search job not found", "job_id": job_id},
-        )
-    if lookup.result is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": "Search job result not ready",
-                "job_id": job_id,
-                "status": lookup.status.status,
-            },
-        )
-    return lookup.result
+@router.get("/jobs/{job_id}/result")
+def search_job_result(job_id: str) -> None:
+    raise _async_not_implemented_http_error()
+
+
+def _async_not_implemented_http_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail={
+            "message": ASYNC_SEARCH_NOT_IMPLEMENTED_MESSAGE,
+            "reason": ASYNC_SEARCH_NOT_IMPLEMENTED_REASON,
+        },
+    )
 
 
 def _search_retrieval_http_error(exc: SearchRetrievalError) -> HTTPException:
