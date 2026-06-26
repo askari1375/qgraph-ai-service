@@ -78,6 +78,24 @@ def test_build_search_body_searches_all_language_fields():
     assert "content_ar.stemmed" in recall["fields"]
 
 
+def test_build_search_body_includes_phrase_boost_clause():
+    body = build_search_body(_query_context())
+    phrase_clauses = [
+        clause["multi_match"]
+        for clause in body["query"]["bool"]["should"]
+        if clause.get("multi_match", {}).get("type") == "phrase"
+    ]
+    assert len(phrase_clauses) == 1
+    assert phrase_clauses[0]["boost"] > 1.0
+    # Phrase matching runs on the normalized primary fields (diacritic-insensitive phrase search).
+    assert phrase_clauses[0]["fields"] == [
+        "content_ar^3",
+        "content_fa^2",
+        "content_en^2",
+        "content_general",
+    ]
+
+
 def test_build_search_body_collapse_is_caller_controlled():
     assert build_search_body(_query_context(collapse=True))["collapse"] == {
         "field": "canonical_content_id"

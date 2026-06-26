@@ -198,6 +198,22 @@ def test_build_fails_validation_when_confirmed_hits_missing(monkeypatch):
     assert "ar-basmala-phrase" in report["validation"]["hard_failures"]
 
 
+def test_build_fails_validation_when_a_case_returns_no_hits(monkeypatch):
+    # Structural enforcement: every golden case must return at least one hit, even a PENDING case
+    # with no pinned canonical ids (e.g. ar-musa-maqsura). An empty result must fail the build.
+    _patch_corpus(monkeypatch, _passing_snapshot())
+
+    class _EmptyCluster(_Cluster):
+        def _search(self, index: str) -> dict[str, Any]:
+            return {"hits": {"hits": []}}
+
+    report = builder.build_index(settings=_settings(), adapter=_EmptyCluster(), activate=True)
+
+    assert report["ok"] is False
+    assert report["activated"] is False
+    assert "ar-musa-maqsura" in report["validation"]["hard_failures"]
+
+
 def test_dry_run_writes_nothing(monkeypatch):
     _patch_corpus(monkeypatch, _passing_snapshot())
     cluster = _Cluster()

@@ -35,11 +35,16 @@ from src.search.opensearch_client import (
 _PRIMARY_FIELDS = ["content_ar^3", "content_fa^2", "content_en^2", "content_general"]
 _RECALL_FIELDS = ["content_ar.stemmed", "content_fa.stemmed", "content_en.exact"]
 _RECALL_BOOST = 0.3
+# An exact phrase match on the normalized primary fields gets an extra boost: because those analyzers
+# normalize but do not stem, this is diacritic-insensitive phrase/proximity matching (e.g. the basmala
+# ranks first for "بسم الله الرحمن الرحيم"). It is additive — non-phrase matches still score via the
+# best_fields clause, so recall is unaffected.
+_PHRASE_BOOST = 2.0
 _CONTENT_FIELDS = ("content_ar", "content_fa", "content_en", "content_general")
 
 
 def _build_bool_query(query_context: QueryContext) -> dict[str, Any]:
-    """Build the shared ``bool`` query (multi-field match + compiled filters)."""
+    """Build the shared ``bool`` query (multi-field match + phrase boost + compiled filters)."""
     should = [
         {
             "multi_match": {
@@ -54,6 +59,14 @@ def _build_bool_query(query_context: QueryContext) -> dict[str, Any]:
                 "fields": _RECALL_FIELDS,
                 "type": "best_fields",
                 "boost": _RECALL_BOOST,
+            }
+        },
+        {
+            "multi_match": {
+                "query": query_context.raw_query,
+                "fields": _PRIMARY_FIELDS,
+                "type": "phrase",
+                "boost": _PHRASE_BOOST,
             }
         },
     ]

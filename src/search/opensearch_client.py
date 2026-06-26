@@ -73,6 +73,10 @@ class OpenSearchHTTPAdapter:
             timeout=timeout_seconds, auth=auth, verify=verify
         )
 
+    def close(self) -> None:
+        """Close the underlying HTTP transport (managed by the app lifespan)."""
+        self._http_client.close()
+
     def get(self, path: str) -> httpx.Response:
         return self._request("GET", path)
 
@@ -168,8 +172,9 @@ def search(adapter: OpenSearchAdapter, target: str, body: dict[str, Any]) -> dic
 def read_index_profile(adapter: OpenSearchAdapter, target: str) -> dict[str, Any]:
     """Read ``mappings._meta.qgraph_index_profile`` from an index or alias.
 
-    A ``GET`` on an alias returns ``{concrete_index_name: {...}}``; the single entry is used, so this
-    works for both the serving alias and a concrete physical index.
+    A ``GET`` on an alias returns ``{concrete_index_name: {...}}``. The serving alias must resolve to
+    exactly one physical index — a multi-target alias is a misconfiguration (ambiguous provenance and
+    compatibility), so this fails loudly rather than silently picking one.
     """
     response = adapter.get(f"/{target}")
     if response.status_code == 404:
@@ -184,6 +189,12 @@ def read_index_profile(adapter: OpenSearchAdapter, target: str) -> dict[str, Any
     payload = response_json(response)
     if not isinstance(payload, dict) or not payload:
         raise OpenSearchError("OpenSearch index profile is missing", reason="index_profile_missing")
+    if len(payload) > 1:
+        raise OpenSearchError(
+            "OpenSearch alias resolves to multiple indices",
+            reason="alias_multiple_targets",
+            detail={"target": target, "indices": sorted(payload.keys())},
+        )
     index_payload = next(iter(payload.values()))
     profile = None
     if isinstance(index_payload, dict):
@@ -333,9 +344,12 @@ def build_opensearch_adapter(
         raise OpenSearchError(
             "OpenSearch URL is not configured", reason="opensearch_not_configured"
         )
+    # An empty username means the cluster has the security plugin disabled; send no Basic-Auth header
+    # rather than an empty "username:password" credential.
+    auth = (username, password) if username else None
     return OpenSearchHTTPAdapter(
         base_url=url,
         timeout_seconds=timeout_seconds,
-        auth=(username, password),
+        auth=auth,
         verify=verify,
     )

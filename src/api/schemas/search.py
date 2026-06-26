@@ -97,6 +97,19 @@ class SearchExecuteResponse(BaseModel):
         return self
 
 
+class SearchReadinessCheck(BaseModel):
+    name: str
+    ok: bool
+    detail: JsonObject = Field(default_factory=dict)
+
+
+class SearchReadinessResponse(BaseModel):
+    ready: bool
+    alias: str
+    active_index: str | None = None
+    checks: list[SearchReadinessCheck] = Field(default_factory=list)
+
+
 class SearchJobClientRef(BaseModel):
     query_id: int | None = None
     execution_id: int | None = None

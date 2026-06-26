@@ -159,6 +159,14 @@ def _swap(adapter: OpenSearchAdapter, alias: str, physical_index: str) -> None:
 
 
 def _validate_golden_set(adapter: OpenSearchAdapter, index: str) -> dict[str, Any]:
+    """Judge a freshly built index against the golden set before it can be activated.
+
+    Structural expectations are enforced for **every** case (hard): each query must return at least one
+    hit, and at least one hit must carry the expected ``content_type`` and ``language_code`` — this is
+    what catches analyzer/scope/language regressions even when a case has no pinned ids. The
+    ``must_include_canonical_ids`` are hard only for ``CONFIRMED`` cases (a missing id fails the build)
+    and soft for ``PENDING`` ones (reported, never failing).
+    """
     cases: list[dict[str, Any]] = []
     hard_failures: list[str] = []
     soft_misses: list[str] = []
@@ -169,29 +177,51 @@ def _validate_golden_set(adapter: OpenSearchAdapter, index: str) -> dict[str, An
             filters=SearchFilters(content_types=list(case.scope)),
         )
         payload = osc.search(adapter, index, build_search_body(query_context))
-        found = _canonical_ids(payload)
-        missing = [cid for cid in case.must_include_canonical_ids if cid not in found]
+        hits = _hit_summaries(payload)
+        found_ids = [hit["canonical_content_id"] for hit in hits if hit["canonical_content_id"]]
+        missing = [cid for cid in case.must_include_canonical_ids if cid not in found_ids]
+        problems = _structural_problems(hits, case)
         cases.append(
             {
                 "id": case.id,
                 "query": case.query,
                 "status": case.status.value,
-                "hit_count": len(found),
+                "hit_count": len(hits),
                 "missing": missing,
+                "problems": problems,
             }
         )
-        if missing:
+        if problems:
+            hard_failures.append(case.id)
+        elif missing:
             (hard_failures if case.is_hard else soft_misses).append(case.id)
     return {"cases": cases, "hard_failures": hard_failures, "soft_misses": soft_misses}
 
 
-def _canonical_ids(payload: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
+def _structural_problems(hits: list[dict[str, Any]], case: Any) -> list[str]:
+    if not hits:
+        return ["no_hits"]
+    expected_types = {content_type.value for content_type in case.expected_content_types}
+    has_expected = any(
+        hit["content_type"] in expected_types and hit["language_code"] == case.expected_language
+        for hit in hits
+    )
+    return [] if has_expected else ["missing_expected_type_or_language"]
+
+
+def _hit_summaries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
     for hit in payload.get("hits", {}).get("hits", []):
         if not isinstance(hit, dict):
             continue
-        source = hit.get("_source")
-        canonical = source.get("canonical_content_id") if isinstance(source, dict) else None
-        if canonical:
-            ids.append(str(canonical))
-    return ids
+        source = hit.get("_source") if isinstance(hit.get("_source"), dict) else {}
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        canonical = source.get("canonical_content_id")
+        summaries.append(
+            {
+                "canonical_content_id": str(canonical) if canonical else "",
+                "content_type": metadata.get("content_type"),
+                "language_code": metadata.get("language_code"),
+            }
+        )
+    return summaries

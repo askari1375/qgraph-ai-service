@@ -1,9 +1,12 @@
 from typing import Any
 
+import httpx
 import pytest
 
+from src.search import opensearch_client as osc
 from src.search.opensearch_client import (
     OpenSearchError,
+    build_opensearch_adapter,
     bulk_index,
     get_alias_targets,
     list_index_names,
@@ -106,6 +109,20 @@ def test_read_index_profile_resolves_alias_payload():
     assert read_index_profile(adapter, "active") == {"document_schema_version": "v2"}
 
 
+def test_read_index_profile_rejects_multi_target_alias():
+    adapter = _RecordingAdapter(
+        get_payloads={
+            "/active": {
+                "index-a": {"mappings": {"_meta": {"qgraph_index_profile": {}}}},
+                "index-b": {"mappings": {"_meta": {"qgraph_index_profile": {}}}},
+            }
+        }
+    )
+    with pytest.raises(OpenSearchError) as exc_info:
+        read_index_profile(adapter, "active")
+    assert exc_info.value.reason == "alias_multiple_targets"
+
+
 def test_search_missing_target_maps_to_index_not_found():
     class _NotFound(_RecordingAdapter):
         def post(self, path, *, json_payload=None, content=None, headers=None):
@@ -114,3 +131,47 @@ def test_search_missing_target_maps_to_index_not_found():
     with pytest.raises(OpenSearchError) as exc_info:
         search(_NotFound(), "absent", {"query": {}})
     assert exc_info.value.reason == "index_not_found"
+
+
+def test_build_adapter_sends_no_auth_when_username_empty(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _fake_client(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(httpx, "Client", _fake_client)
+    build_opensearch_adapter(url="https://opensearch:9200", username="", password="ignored")
+    assert captured["auth"] is None
+
+
+def test_build_adapter_sends_basic_auth_when_username_present(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def _fake_client(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(httpx, "Client", _fake_client)
+    build_opensearch_adapter(url="https://opensearch:9200", username="admin", password="secret")
+    assert captured["auth"] == ("admin", "secret")
+
+
+def test_build_adapter_requires_a_url():
+    with pytest.raises(OpenSearchError) as exc_info:
+        build_opensearch_adapter(url="")
+    assert exc_info.value.reason == "opensearch_not_configured"
+
+
+def test_http_adapter_close_closes_transport():
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = _FakeClient()
+    adapter = osc.OpenSearchHTTPAdapter(base_url="https://opensearch:9200", http_client=fake)
+    adapter.close()
+    assert fake.closed is True

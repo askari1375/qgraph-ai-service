@@ -1,20 +1,34 @@
 from typing import Any
 
-from src.api.schemas.search import SearchExecuteRequest, SearchExecuteResponse
+from src.api.schemas.search import (
+    SearchExecuteRequest,
+    SearchExecuteResponse,
+    SearchReadinessCheck,
+    SearchReadinessResponse,
+)
 from src.config import Settings, get_settings
 from src.search.contracts import QueryContext, SearchFilters
 from src.search.opensearch_client import (
     OpenSearchAdapter,
     OpenSearchError,
+    OpenSearchHTTPAdapter,
     build_opensearch_adapter,
+    get_alias_targets,
     read_index_profile,
+    search,
 )
 from src.search.pipeline import RetrievalPipeline
 from src.search.response_builder import build_execute_response
 from src.search.retrievers.lexical_opensearch import (
     LexicalRetriever,
     aggregate_surah_distribution,
+    build_search_body,
+    compatibility_mismatches,
 )
+
+# A token guaranteed to appear across the Quran corpus, used to prove the served query path returns
+# hits (not just that the cluster is up) in the readiness probe.
+READINESS_SMOKE_QUERY = "الله"
 
 
 class SearchRetrievalError(Exception):
@@ -46,6 +60,8 @@ def build_search_execute_response(
     cfg = settings if settings is not None else get_settings()
     filters = SearchFilters.from_request_filters(request.filters)
     top_k = _resolve_top_k(request.output_preferences)
+    # Surah-name documents are indexed but intentionally not served by this execute path in V1: the
+    # default scope is Arabic ayat + translations. Surah-name search is index-only for now.
     # Arabic verses and translations are retrieved in separate scoped queries so each result block is
     # independently populated and ranked, and the distribution chart reflects the verses alone (stable
     # regardless of the translation control). Single-content-type scopes don't need collapse.
@@ -54,7 +70,7 @@ def build_search_execute_response(
     )
     alias = cfg.opensearch_alias
     try:
-        active_adapter = adapter if adapter is not None else _build_adapter(cfg)
+        active_adapter = adapter if adapter is not None else build_search_adapter(cfg)
         pipeline = RetrievalPipeline([LexicalRetriever(active_adapter, alias)])
         ayah_candidates = pipeline.run(ayah_context)
         translation_candidates = (
@@ -90,13 +106,103 @@ def build_search_execute_response(
     )
 
 
-def _build_adapter(settings: Settings) -> OpenSearchAdapter:
+def build_search_adapter(settings: Settings) -> OpenSearchHTTPAdapter:
+    """Build the OpenSearch adapter for the configured cluster (one app-scoped client per process)."""
     return build_opensearch_adapter(
         url=settings.opensearch_url,
         timeout_seconds=settings.opensearch_timeout_seconds,
         username=settings.opensearch_username,
         password=settings.opensearch_password,
         verify=settings.opensearch_ca_cert_path or settings.opensearch_verify_certs,
+    )
+
+
+def check_search_readiness(
+    settings: Settings | None = None,
+    adapter: OpenSearchAdapter | None = None,
+) -> SearchReadinessResponse:
+    """Probe whether the search path can actually serve queries.
+
+    Confirms the serving alias resolves to exactly one index, the index build profile is compatible
+    with the running code, and a known smoke query returns at least one hit — so a deploy or monitor
+    cannot report search healthy while ``/v1/search/execute`` would return a service error.
+    """
+    cfg = settings if settings is not None else get_settings()
+    alias = cfg.opensearch_alias
+    checks: list[SearchReadinessCheck] = []
+
+    if not cfg.opensearch_url:
+        checks.append(
+            SearchReadinessCheck(
+                name="opensearch_configured",
+                ok=False,
+                detail={"reason": "opensearch_not_configured"},
+            )
+        )
+        return SearchReadinessResponse(ready=False, alias=alias, active_index=None, checks=checks)
+
+    active_adapter = adapter if adapter is not None else build_search_adapter(cfg)
+    try:
+        targets = get_alias_targets(active_adapter, alias)
+        if len(targets) != 1:
+            checks.append(
+                SearchReadinessCheck(
+                    name="alias_single_target",
+                    ok=False,
+                    detail={"alias": alias, "active_indices": targets},
+                )
+            )
+            return SearchReadinessResponse(
+                ready=False, alias=alias, active_index=None, checks=checks
+            )
+        active_index = targets[0]
+        checks.append(
+            SearchReadinessCheck(
+                name="alias_single_target", ok=True, detail={"index": active_index}
+            )
+        )
+
+        mismatches = compatibility_mismatches(read_index_profile(active_adapter, alias))
+        checks.append(
+            SearchReadinessCheck(
+                name="index_profile_compatible",
+                ok=not mismatches,
+                detail={"mismatches": mismatches} if mismatches else {},
+            )
+        )
+        if mismatches:
+            return SearchReadinessResponse(
+                ready=False, alias=alias, active_index=active_index, checks=checks
+            )
+
+        smoke = search(
+            active_adapter,
+            alias,
+            build_search_body(QueryContext(raw_query=READINESS_SMOKE_QUERY, top_k=1)),
+        )
+        hit_count = len(smoke.get("hits", {}).get("hits", []))
+        checks.append(
+            SearchReadinessCheck(
+                name="smoke_query",
+                ok=hit_count > 0,
+                detail={"query": READINESS_SMOKE_QUERY, "hit_count": hit_count},
+            )
+        )
+    except OpenSearchError as exc:
+        checks.append(
+            SearchReadinessCheck(
+                name="opensearch_reachable",
+                ok=False,
+                detail={"reason": exc.reason, "message": exc.message},
+            )
+        )
+        return SearchReadinessResponse(ready=False, alias=alias, active_index=None, checks=checks)
+
+    return SearchReadinessResponse(
+        ready=all(check.ok for check in checks),
+        alias=alias,
+        active_index=active_index,
+        checks=checks,
     )
 
 

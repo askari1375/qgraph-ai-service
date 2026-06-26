@@ -4,7 +4,7 @@ from src.services.search_service import SearchRetrievalError
 _MARKDOWN = "| # | Reference | Match | Source |\n| ---: | --- | --- | --- |\n| 1 | Surah 1, Ayah 1 | بسم الله | Quran Arabic |"
 
 
-def _canned_response(_payload) -> SearchExecuteResponse:
+def _canned_response(_payload, adapter=None) -> SearchExecuteResponse:
     return SearchExecuteResponse(
         title="Search results for mercy",
         overall_confidence=0.5,
@@ -58,7 +58,7 @@ def test_search_execute_retrieval_error_returns_service_error(
     search_execute_payload,
     monkeypatch,
 ):
-    def raise_retrieval_error(_payload):
+    def raise_retrieval_error(_payload, adapter=None):
         raise SearchRetrievalError(
             "OpenSearch lexical index is not available",
             reason="index_not_found",
