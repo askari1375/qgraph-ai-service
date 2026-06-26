@@ -31,16 +31,12 @@ The service reads `QGRAPH_AI_`-prefixed settings. In production the central stac
 | `QGRAPH_AI_RENDER_SCHEMA_VERSION` | Search response render schema version |
 | `QGRAPH_AI_SEARCH_BACKEND_NAME` | Search planning backend metadata |
 | `QGRAPH_AI_SEARCH_BACKEND_VERSION` | Search planning backend metadata |
-| `QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE` | Search execution mode: `mock` or `opensearch` |
 | `QGRAPH_AI_SEARCH_CORPUS_SNAPSHOT_CACHE_DIR` | Local path reserved for pulled corpus snapshot data |
-| `QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID` | Active corpus snapshot id expected by retrieval indexes |
-| `QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH` | Active corpus snapshot hash expected by retrieval indexes |
-| `QGRAPH_AI_SEARCH_RANKER_PROFILE_ID` | Active lexical ranker profile metadata |
 | `QGRAPH_AI_DJANGO_INTERNAL_BASE_URL` | Private Django base URL for corpus snapshot pulls |
 | `QGRAPH_AI_DJANGO_INTERNAL_TOKEN` | Shared internal token sent to Django corpus export |
 | `QGRAPH_AI_DJANGO_INTERNAL_TIMEOUT_SECONDS` | Django corpus export timeout |
 | `QGRAPH_AI_OPENSEARCH_URL` | Private OpenSearch base URL for lexical retrieval (`https://` against a security-enabled cluster) |
-| `QGRAPH_AI_OPENSEARCH_INDEX_NAME` | OpenSearch index name for Quran lexical documents |
+| `QGRAPH_AI_OPENSEARCH_ALIAS` | Serving alias the app queries (activation repoints it; default `qgraph-ayah-lexical-active`) |
 | `QGRAPH_AI_OPENSEARCH_TIMEOUT_SECONDS` | OpenSearch request timeout |
 | `QGRAPH_AI_OPENSEARCH_USERNAME` | Basic-auth user for a security-enabled cluster (empty = no auth) |
 | `QGRAPH_AI_OPENSEARCH_PASSWORD` | Basic-auth password for the above user |
@@ -76,18 +72,13 @@ container replacement.
 
 ## Search Retrieval Configuration
 
-Keep production on mock search execution until OpenSearch is reachable, the
-Quran corpus snapshot has been indexed, and the active snapshot id/hash match
-the OpenSearch index profile:
+OpenSearch is the only retrieval backend — there is no mock mode and no snapshot
+id/hash to copy. The serving **alias** is the source of truth for which index is
+live; activation is an atomic alias swap performed by the indexing CLI (see
+[search/indexing.md](search/indexing.md)). Configure the cluster connection and
+the alias:
 
 ```env
-QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=mock
-```
-
-When enabling lexical retrieval, set:
-
-```env
-QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch
 QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
 QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
 # Against a security-enabled cluster use https + credentials (see env table).
@@ -95,23 +86,31 @@ QGRAPH_AI_OPENSEARCH_URL=https://opensearch:9200
 QGRAPH_AI_OPENSEARCH_USERNAME=admin
 QGRAPH_AI_OPENSEARCH_PASSWORD=<opensearch-admin-password>
 QGRAPH_AI_OPENSEARCH_VERIFY_CERTS=false
-QGRAPH_AI_OPENSEARCH_INDEX_NAME=qgraph-ayah-lexical-v1
-QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
-QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
+QGRAPH_AI_OPENSEARCH_ALIAS=qgraph-ayah-lexical-active
 ```
 
 The AI service pulls Quran corpus snapshots from Django's private internal
 endpoint and sends the shared token as `X-QGraph-Internal-Token`. The snapshot
 is converted into versioned Arabic, Persian, and English search documents and
-indexed into OpenSearch with the corpus snapshot id/hash stored in index
-metadata.
+indexed into an immutable physical index; the corpus snapshot id/hash live in the
+index profile (`mappings._meta`) and are surfaced in response provenance — they
+are read, never configured.
 
-The production Compose file does not start OpenSearch. Run OpenSearch as part
-of the private backend infrastructure and make it reachable from `ai-backend`
-through `QGRAPH_AI_OPENSEARCH_URL`. Set retrieval mode to `opensearch` only
-after the index exists. In retrieval mode, missing OpenSearch configuration,
-missing indexes, or stale index profiles return a service error; the service
-does not silently fall back to mock results.
+The production Compose file does not start OpenSearch by default (it is behind a
+`search` profile). Run OpenSearch as part of the private backend infrastructure,
+make it reachable from `ai-backend` through `QGRAPH_AI_OPENSEARCH_URL`, build and
+activate an index, then confirm `GET /v1/search/readiness` is green. Missing
+OpenSearch configuration, a missing/empty alias, or a stale index profile return
+a service error; the service never silently falls back to fake results.
+
+### Readiness
+
+`GET /v1/search/readiness` confirms the alias resolves to exactly one index, the
+index build profile is compatible with the running code, and a smoke query
+returns hits. It returns `200` when ready and `503` otherwise (with a structured
+body), so a deploy or monitor cannot report search healthy while
+`/v1/search/execute` would return a service error. The deploy script uses it as a
+search-readiness gate when the `search` profile is enabled.
 
 ## Build The Image
 
@@ -178,7 +177,13 @@ python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/
 
 Run one Uvicorn worker for now. The production command relies on Uvicorn's default of one worker.
 
-Search jobs currently live in process memory in `src/services/search_jobs.py`. Increasing Uvicorn workers, running multiple containers, or scaling replicas would split that state across processes. Before scaling horizontally or increasing workers, move search job state to Redis, a database, or another durable shared store.
+Search is synchronous and stateless: `/v1/search/execute` runs lexical retrieval
+and returns the result in the request. Asynchronous search jobs are not
+implemented — `/v1/search/jobs*` fail loudly with `501` rather than simulating
+progress — so there is no in-process job state to shard. Durable async
+orchestration is reserved for a future LLM/RAG answer-generation path and would
+introduce a shared store (Redis/Celery) when it lands; until then horizontal
+scaling has no search-job state to coordinate.
 
 ## Deploying
 

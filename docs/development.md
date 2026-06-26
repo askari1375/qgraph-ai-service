@@ -108,31 +108,25 @@ development does not always start a heavier search service.
 
 ## Search Retrieval Foundation
 
-Search execution defaults to mock mode:
+Search execution is OpenSearch-only (there is no mock mode). Point the service at
+a cluster and the serving alias; build and activate an index before querying:
 
 ```env
-QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=mock
-```
-
-Use OpenSearch retrieval only after a Quran corpus snapshot has been pulled from
-Django, converted into search documents, indexed, and declared active:
-
-```env
-QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch
 QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
 QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
 QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
-QGRAPH_AI_OPENSEARCH_INDEX_NAME=qgraph-ayah-lexical-v1
-QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_ID=<snapshot-id>
-QGRAPH_AI_SEARCH_ACTIVE_CORPUS_SNAPSHOT_HASH=<snapshot-hash>
+QGRAPH_AI_OPENSEARCH_ALIAS=qgraph-ayah-lexical-active
 ```
 
-In `opensearch` mode the active snapshot id and hash are **required**:
-`/v1/search/execute` returns a service error (`opensearch_active_snapshot_not_configured`)
-when they are unset, so the index-profile drift check can never be silently
-skipped. Re-running the indexing script with `--recreate-index` deletes and
-rebuilds the index in place (a refreshed corpus produces a new snapshot id/hash —
-copy the printed values back into the env above).
+The serving **alias** is the source of truth for which index is live — there is
+no snapshot id/hash to copy. The indexing CLI builds a fresh immutable physical
+index, validates it against the golden set, and atomically swaps the alias; the
+snapshot id/hash live in the index profile and are surfaced in response
+provenance. See [search/indexing.md](search/indexing.md) for the build / activate
+/ status workflow and [search/golden-eval-set.md](search/golden-eval-set.md) for
+validation. Confirm `GET /v1/search/readiness` is green after activating. A
+missing/misconfigured cluster, an empty alias, or a stale index profile returns a
+service error — never fake results.
 
 The Django corpus snapshot export expected by the AI service is:
 
@@ -156,14 +150,13 @@ X-QGraph-Internal-Token: <shared-internal-token>
 The service-side indexing path is deliberately narrow:
 
 ```text
-DjangoCorpusClient -> build_search_documents -> OpenSearchLexicalBackend.index_documents
+DjangoCorpusClient -> build_search_documents -> create index -> bulk index -> validate -> swap alias
 ```
 
-OpenSearch indexing uses chunked `_bulk` requests rather than one request for
-the entire corpus. The default batch limits are 1,000 documents and 8 MiB per
-request. The local full-corpus indexing script exposes
-`--bulk-batch-document-count` and `--bulk-batch-max-bytes` for debugging or
-tuning.
+It is driven by `python -m src.search.indexing.cli build|activate|status`
+(`--dry-run`, `--activate`, `--languages`, `--surahs`). OpenSearch indexing uses
+chunked `_bulk` requests rather than one request for the entire corpus (default
+limits: 1,000 documents and 8 MiB per request).
 
 Documents use stable IDs:
 
@@ -176,16 +169,17 @@ ayah:{surah_number}:{ayah_number}:translation:{source_id}
 Django, never a database primary key, so document IDs and the corpus snapshot
 id/hash stay identical across reseeds and environments.
 
-Every document carries the corpus snapshot id/hash, document schema version,
-normalization profile id/version, surah/ayah metadata, language code, and source
-id. Arabic, Persian, and English normalization is versioned so an index can be
-rejected when it was built with stale text processing.
+Each document carries only what varies per document: `canonical_content_id`,
+`content_type`, surah/ayah metadata, language code, and source id. Build-level
+provenance (corpus snapshot id/hash, document schema version, normalization and
+analysis profile versions) lives once in the index profile (`mappings._meta`).
+Those profile versions are code constants, so an index built with stale text
+processing is rejected at query time rather than silently served.
 
 Tests use fake adapters and do not require a running OpenSearch server. A real
-OpenSearch node is needed only for manual retrieval smoke checks or production
-retrieval mode. If `opensearch` mode is enabled and the URL, index, or active
-profile is missing or stale, `/v1/search/execute` returns a service error rather
-than mock results.
+OpenSearch node is needed only for manual retrieval smoke checks or production.
+If the URL, alias, or index profile is missing or stale, `/v1/search/execute`
+returns a service error rather than fake results.
 
 ## Prepared Segmentation Artifacts
 

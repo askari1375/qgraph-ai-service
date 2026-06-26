@@ -11,16 +11,17 @@ while keeping Django-facing response shapes stable.
 
 - FastAPI request-response service
 - Search planning endpoint: `POST /v1/search/plan`
-- Search execution endpoint: `POST /v1/search/execute`
-- Search async job create endpoint: `POST /v1/search/jobs`
-- Search async job status endpoint: `GET /v1/search/jobs/{job_id}`
-- Search async job result endpoint: `GET /v1/search/jobs/{job_id}/result`
+- Search execution endpoint: `POST /v1/search/execute` (synchronous)
+- Search readiness endpoint: `GET /v1/search/readiness`
+- Search async job endpoints (`POST /v1/search/jobs`, `GET /v1/search/jobs/{job_id}`,
+  `GET /v1/search/jobs/{job_id}/result`): present as a seam but **not implemented** — they
+  return `501` (async is reserved for a future LLM/RAG path)
 - Django corpus snapshot pull client for
   `GET /api/internal/ai/corpus-snapshots/quran`
 - Versioned Arabic, Persian, and English normalization profiles
 - Ayah and translation search document builder with stable document IDs
-- OpenSearch lexical/BM25 backend, enabled only when
-  `QGRAPH_AI_SEARCH_LEXICAL_BACKEND_MODE=opensearch`
+- OpenSearch lexical/BM25 backend, served through an alias and configured via
+  `QGRAPH_AI_OPENSEARCH_URL` + `QGRAPH_AI_OPENSEARCH_ALIAS` (no mock mode)
 - Segmentation generation endpoint: `POST /v1/segmentation/generate`
 - Segmentation artifact manifest endpoint:
   `GET /v1/segmentation/artifacts/{artifact_id}/manifest`
@@ -33,12 +34,12 @@ Prepared segmentation artifacts are file-backed by default under
 `QGRAPH_AI_SEGMENTATION_ARTIFACTS_DIR`. The public transfer payload uses
 surah-local `start_ayah_number` and `end_ayah_number` fields.
 
-Search execution defaults to mock mode for local development and existing
-Django integration tests. In `opensearch` mode, `/v1/search/execute` queries the
-configured OpenSearch index and returns the same v1 response envelope with
-result items carrying corpus snapshot, normalization profile, ranker profile,
-and lexical score provenance. Missing or stale retrieval indexes return a clear
-service error instead of silently falling back to mock results.
+Search execution is OpenSearch-only and synchronous. `/v1/search/execute` queries
+the serving alias and returns the v1 response envelope with result items carrying
+corpus snapshot, normalization profile, analysis profile, and lexical score
+provenance read from the index profile. A missing/misconfigured cluster, an empty
+alias, or a stale index profile returns a clear service error — the service never
+falls back to fake results.
 
 ## Project Structure (Bootstrap)
 
