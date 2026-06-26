@@ -109,8 +109,17 @@ a service error; the service never silently falls back to fake results.
 index build profile is compatible with the running code, and a smoke query
 returns hits. It returns `200` when ready and `503` otherwise (with a structured
 body), so a deploy or monitor cannot report search healthy while
-`/v1/search/execute` would return a service error. The deploy script uses it as a
-search-readiness gate when the `search` profile is enabled.
+`/v1/search/execute` would return a service error.
+
+Two distinct uses, intentionally not the same gate (because indexing is a
+separate, manual step — a fresh node has no index yet and *should* still deploy):
+
+- **Image deploy** (`deploy.sh ai-service` / `all` with the `search` profile
+  enabled) runs readiness as a **soft, warn-only** probe. It surfaces whether
+  search is live but never fails the rollout on a missing index.
+- **The hard gate** is `deploy.sh search-readiness`, which fails on `503`. It is a
+  **required release step run after building and activating an index** — that is
+  the unambiguous "search is actually serving" check, not the image deploy.
 
 ## Build The Image
 
