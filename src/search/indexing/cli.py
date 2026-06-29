@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from src.search.indexing import builder
+from src.services.corpus_client import DjangoCorpusClientError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +45,14 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    try:
+        return _dispatch(args)
+    except DjangoCorpusClientError as exc:
+        _print_corpus_error(exc)
+        return 1
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "build":
         report = builder.build_index(
             activate=args.activate,
@@ -66,6 +76,20 @@ def main(argv: list[str] | None = None) -> int:
 
     _print(builder.index_status())
     return 0
+
+
+def _print_corpus_error(exc: DjangoCorpusClientError) -> None:
+    """Surface the Django corpus-snapshot failure with its HTTP status and body.
+
+    The underlying status and response body are the actionable signal (e.g. a 400
+    DisallowedHost names the host to add to ALLOWED_HOSTS); without printing them the
+    failure is opaque.
+    """
+    print(f"ERROR: {exc.message}", file=sys.stderr)
+    if exc.status_code is not None:
+        print(f"  HTTP status: {exc.status_code}", file=sys.stderr)
+    for detail in exc.errors:
+        print(f"  {json.dumps(detail, ensure_ascii=False)}", file=sys.stderr)
 
 
 def _csv(value: str | None) -> list[str] | None:

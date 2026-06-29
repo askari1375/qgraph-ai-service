@@ -1,6 +1,23 @@
 from typing import Any
 
 from src.search.indexing import cli
+from src.services.corpus_client import DjangoCorpusClientError
+
+
+def test_build_surfaces_corpus_error_status_and_body(monkeypatch, capsys):
+    def fail(**_kw):
+        raise DjangoCorpusClientError(
+            "Django corpus snapshot endpoint returned an error",
+            status_code=400,
+            errors=[{"body": "Invalid HTTP_HOST header: 'web:8000'."}],
+        )
+
+    monkeypatch.setattr(cli.builder, "build_index", fail)
+    assert cli.main(["build"]) == 1
+
+    err = capsys.readouterr().err
+    assert "HTTP status: 400" in err
+    assert "web:8000" in err
 
 
 def test_build_command_prints_activate_hint_and_returns_zero(monkeypatch, capsys):
