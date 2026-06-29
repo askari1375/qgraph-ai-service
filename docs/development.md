@@ -82,19 +82,25 @@ docker compose --profile search up -d opensearch
 Wait for it to become healthy, then check it from the host:
 
 ```bash
-curl http://127.0.0.1:9200
+curl -k -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" https://127.0.0.1:9200
 ```
 
 Host-run scripts should use:
 
 ```env
-QGRAPH_AI_OPENSEARCH_URL=http://127.0.0.1:9200
+QGRAPH_AI_OPENSEARCH_URL=https://127.0.0.1:9200
+QGRAPH_AI_OPENSEARCH_USERNAME=admin
+QGRAPH_AI_OPENSEARCH_PASSWORD=<same value as OPENSEARCH_INITIAL_ADMIN_PASSWORD>
+QGRAPH_AI_OPENSEARCH_VERIFY_CERTS=false
 ```
 
 The AI container uses Docker DNS instead:
 
 ```env
-QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+QGRAPH_AI_OPENSEARCH_URL=https://opensearch:9200
+QGRAPH_AI_OPENSEARCH_USERNAME=admin
+QGRAPH_AI_OPENSEARCH_PASSWORD=<same value as OPENSEARCH_INITIAL_ADMIN_PASSWORD>
+QGRAPH_AI_OPENSEARCH_VERIFY_CERTS=false
 ```
 
 The local Compose file sets that container value automatically. OpenSearch is
@@ -114,7 +120,10 @@ a cluster and the serving alias; build and activate an index before querying:
 ```env
 QGRAPH_AI_DJANGO_INTERNAL_BASE_URL=http://web:8000
 QGRAPH_AI_DJANGO_INTERNAL_TOKEN=<shared-internal-token>
-QGRAPH_AI_OPENSEARCH_URL=http://opensearch:9200
+QGRAPH_AI_OPENSEARCH_URL=https://opensearch:9200
+QGRAPH_AI_OPENSEARCH_USERNAME=admin
+QGRAPH_AI_OPENSEARCH_PASSWORD=<same value as OPENSEARCH_INITIAL_ADMIN_PASSWORD>
+QGRAPH_AI_OPENSEARCH_VERIFY_CERTS=false
 QGRAPH_AI_OPENSEARCH_ALIAS=qgraph-ayah-lexical-active
 ```
 
