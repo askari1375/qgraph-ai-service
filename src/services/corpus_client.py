@@ -40,7 +40,7 @@ class DjangoCorpusClient:
         *,
         base_url: str,
         internal_token: str,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = 120.0,
         http_client: httpx.Client | None = None,
     ):
         self.base_url = base_url.rstrip("/")

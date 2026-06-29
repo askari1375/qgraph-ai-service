@@ -29,7 +29,9 @@ class Settings(BaseSettings):
 
     django_internal_base_url: str = ""
     django_internal_token: str = ""
-    django_internal_timeout_seconds: float = 10.0
+    # The only caller is the offline index builder pulling the full corpus snapshot,
+    # which Django assembles in one response — generous by design, not a request-path timeout.
+    django_internal_timeout_seconds: float = 120.0
 
     opensearch_url: str = ""
     # The serving alias the app queries; activation repoints it at a new physical index version.
