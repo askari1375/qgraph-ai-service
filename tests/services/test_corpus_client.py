@@ -43,6 +43,7 @@ def test_django_corpus_client_sends_internal_header_and_query_params():
         seen["path"] = request.url.path
         seen["query"] = request.url.query.decode()
         seen["token"] = request.headers["X-QGraph-Internal-Token"]
+        seen["forwarded_proto"] = request.headers["X-Forwarded-Proto"]
         return httpx.Response(200, json=_snapshot_payload())
 
     client = DjangoCorpusClient(
@@ -60,6 +61,7 @@ def test_django_corpus_client_sends_internal_header_and_query_params():
         "path": "/api/internal/ai/corpus-snapshots/quran",
         "query": "translation_languages=en%2Cfa&surah_numbers=1%2C2",
         "token": "secret-token",
+        "forwarded_proto": "https",
     }
     assert snapshot.corpus_snapshot_id == "snapshot-001"
     assert snapshot.corpus_snapshot_hash == "sha256:abc123"

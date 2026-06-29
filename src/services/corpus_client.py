@@ -10,6 +10,12 @@ from src.config import Settings, get_settings
 
 QURAN_CORPUS_SNAPSHOT_PATH = "/api/internal/ai/corpus-snapshots/quran"
 INTERNAL_TOKEN_HEADER = "X-QGraph-Internal-Token"
+# Django runs behind a TLS-terminating proxy with SSL redirect on, so a plain-HTTP
+# internal call (http://web:8000) is answered with a 301 to https unless the request
+# declares it arrived over a secure hop. We are that trusted internal caller, so we
+# assert the forwarded-proto Django already trusts (SECURE_PROXY_SSL_HEADER), matching
+# how the proxy marks external traffic.
+FORWARDED_PROTO_HEADER = "X-Forwarded-Proto"
 # Django producer contract (quran.services.corpus_snapshot.SCHEMA_VERSION).
 EXPECTED_CORPUS_SCHEMA_VERSION = "qgraph-corpus-snapshot-v1"
 
@@ -60,7 +66,10 @@ class DjangoCorpusClient:
             response = self._http_client.get(
                 f"{self.base_url}{QURAN_CORPUS_SNAPSHOT_PATH}",
                 params=params,
-                headers={INTERNAL_TOKEN_HEADER: self.internal_token},
+                headers={
+                    INTERNAL_TOKEN_HEADER: self.internal_token,
+                    FORWARDED_PROTO_HEADER: "https",
+                },
             )
         except httpx.RequestError as exc:
             raise DjangoCorpusClientError(
