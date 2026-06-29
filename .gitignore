@@ -57,3 +57,6 @@ data/
 
 # AI assistants
 .ai/
+
+# graphify knowledge graph — regenerable; rebuilt by git hook / update-graph.sh
+graphify-out/

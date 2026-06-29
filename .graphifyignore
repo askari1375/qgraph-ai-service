@@ -1,0 +1,3 @@
+# graphify-only excludes: local tooling dir not covered by .gitignore or
+# graphify's built-in skip list.
+.claude/

@@ -1,3 +1,7 @@
+# `pre-commit install` sets up both stages: ruff (pre-commit) and the graphify
+# graph rebuild (post-commit). Run it once after cloning.
+default_install_hook_types: [pre-commit, post-commit]
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
@@ -5,3 +9,18 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+
+  # Rebuild the graphify knowledge graph after each commit. AST only — no LLM,
+  # no API cost. Kept here (not in .git/hooks/) so it is versioned and visible.
+  # Deep markdown/concept extraction still needs `/graphify . --update` in an AI
+  # session; see qgraph-docs/knowledge-graph.md.
+  - repo: local
+    hooks:
+      - id: graphify-rebuild
+        name: graphify — rebuild knowledge graph (AST only)
+        entry: graphify update .
+        language: system
+        stages: [post-commit]
+        always_run: true
+        pass_filenames: false
+        verbose: true
