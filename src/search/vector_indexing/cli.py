@@ -47,6 +47,12 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("status", help="Show the active collection and compatibility")
 
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Run the semantic eval against a physical collection (paid: one embed/case)",
+    )
+    evaluate_parser.add_argument("collection", help="Physical collection name to evaluate")
+
     args = parser.parse_args(argv)
 
     try:
@@ -82,6 +88,14 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "activate":
         _print(builder.activate_semantic_collection(args.collection, delete_old=args.delete_old))
+        return 0
+
+    if args.command == "evaluate":
+        report = builder.evaluate_collection(args.collection)
+        _print(report)
+        if not report["ok"]:
+            print("\nEval FAILED: a CONFIRMED case is missing a must-include id.")
+            return 1
         return 0
 
     _print(builder.semantic_status())

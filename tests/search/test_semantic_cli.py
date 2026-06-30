@@ -107,3 +107,25 @@ def test_status_command(monkeypatch):
         cli.builder, "semantic_status", lambda: {"alias": "a", "active_collection": None}
     )
     assert cli.main(["status"]) == 0
+
+
+def test_evaluate_command_returns_zero_when_ok(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake(collection, **_kw):
+        captured["collection"] = collection
+        return {"ok": True, "hard_failures": [], "soft_misses": ["en-mercy"], "cases": []}
+
+    monkeypatch.setattr(cli.builder, "evaluate_collection", fake)
+    assert cli.main(["evaluate", "col-1"]) == 0
+    assert captured["collection"] == "col-1"
+
+
+def test_evaluate_command_returns_one_on_hard_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.builder,
+        "evaluate_collection",
+        lambda collection, **_kw: {"ok": False, "hard_failures": ["c1"], "cases": []},
+    )
+    assert cli.main(["evaluate", "col-1"]) == 1
+    assert "Eval FAILED" in capsys.readouterr().out

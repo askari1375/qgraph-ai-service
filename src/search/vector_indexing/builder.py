@@ -30,6 +30,7 @@ from src.search.embeddings.contracts import (
 from src.search.embeddings.factory import build_embedding_provider
 from src.search.embeddings.input import prepare_embedding_input
 from src.search.embeddings.tokenization import TokenCounter
+from src.search.eval.runner import evaluate_semantic_collection
 from src.search.indexing.documents import SearchIndexDocument, build_search_documents
 from src.search.vector.corpus_policy import select_semantic_documents
 from src.search.vector.mapping import (
@@ -150,6 +151,14 @@ def build_semantic_collection(
     report["ok"] = not validation["hard_failures"]
     report["activated"] = False
     if report["ok"]:
+        # Quality gate: run the semantic eval against the physical collection before activation. A
+        # CONFIRMED case missing a must-include id blocks activation; PENDING cases are reported only.
+        evaluation = evaluate_semantic_collection(
+            collection, store=store, provider=provider, vector_name=profile.vector_name
+        )
+        report["evaluation"] = evaluation
+        report["ok"] = evaluation["ok"]
+    if report["ok"]:
         write_semantic_profile(profile, directory=settings.semantic_index_profiles_dir)
         if activate:
             store.swap_alias(settings.qdrant_collection_alias, collection)
@@ -229,6 +238,32 @@ def semantic_status(
     if failures:
         status["mismatches"] = failures
     return status
+
+
+def evaluate_collection(
+    collection: str,
+    *,
+    settings: Settings | None = None,
+    store: QdrantStore | None = None,
+    provider: EmbeddingProvider | None = None,
+) -> dict[str, Any]:
+    """Run the semantic eval against an existing physical collection on demand.
+
+    Paid: embeds one query per eval case. Lets the owner re-run the cross-lingual top-K report after a
+    build/activate (or after promoting PENDING→CONFIRMED) without rebuilding the collection.
+    """
+    settings = settings or get_settings()
+    store = store or _store(settings)
+    provider = provider or build_embedding_provider(settings)
+    if not store.collection_exists(collection):
+        raise QdrantError(
+            f"collection {collection} does not exist",
+            reason="semantic_collection_missing",
+            detail={"collection": collection},
+        )
+    return evaluate_semantic_collection(
+        collection, store=store, provider=provider, vector_name=settings.qdrant_vector_name
+    )
 
 
 def build_embedding_preflight(
