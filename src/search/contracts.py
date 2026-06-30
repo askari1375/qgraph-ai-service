@@ -58,8 +58,10 @@ DEFAULT_RESULT_CONTENT_TYPES: tuple[ContentType, ...] = (
 )
 
 #: Stable ``retriever`` tag for the OpenSearch lexical backend. Future backends add their own
-#: (e.g. ``"qdrant_dense"``, ``"neo4j_graph"``).
+#: (e.g. ``"neo4j_graph"``).
 RETRIEVER_OPENSEARCH_LEXICAL = "opensearch_lexical"
+#: Stable ``retriever`` tag for the Qdrant dense semantic backend.
+RETRIEVER_QDRANT_DENSE = "qdrant_dense"
 
 
 # ``document_id`` builders — the unique searchable unit per content type.
