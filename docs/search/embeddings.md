@@ -1,5 +1,8 @@
 # Embedding provider
 
+> For how embeddings are served at query time (the hybrid retrieval policy, fusion, and readiness), see
+> [hybrid-retrieval.md](hybrid-retrieval.md).
+
 How the AI service turns text into vectors for semantic search. The embedding provider is a small,
 project-owned seam (`src/search/embeddings/`), deliberately not a third-party embedding framework:
 the compatibility facts that protect a vector collection from silent model/dimension drift live in our
