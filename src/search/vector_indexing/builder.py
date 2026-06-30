@@ -18,12 +18,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
+from math import ceil
 from typing import Any
 
 from src.config import Settings, get_settings
-from src.search.embeddings.contracts import EmbeddingProvider, validate_embedding_vectors
+from src.search.embeddings.contracts import (
+    EmbeddingError,
+    EmbeddingProvider,
+    validate_embedding_vectors,
+)
 from src.search.embeddings.factory import build_embedding_provider
 from src.search.embeddings.input import prepare_embedding_input
+from src.search.embeddings.tokenization import TokenCounter
 from src.search.indexing.documents import SearchIndexDocument, build_search_documents
 from src.search.vector.corpus_policy import select_semantic_documents
 from src.search.vector.mapping import (
@@ -91,10 +97,27 @@ def build_semantic_collection(
         "language_counts": _counts(documents, lambda doc: doc.metadata.language_code),
         "content_type_counts": _counts(documents, lambda doc: doc.metadata.content_type.value),
     }
-    if provider is not None:
-        report["embedding_provider"] = provider.profile.provider
-        report["embedding_model"] = provider.profile.model
-        report["embedding_dimensions"] = provider.profile.dimensions
+    # Provider facts come from the resolved provider (real build) or the configured settings (a
+    # ``--dry-run`` constructs none). Both drive the preflight token/cost estimate below.
+    provider_name = provider.profile.provider if provider else settings.embedding_provider
+    model = provider.profile.model if provider else settings.embedding_model
+    dimensions = provider.profile.dimensions if provider else settings.embedding_dimensions
+    if provider is not None or model:
+        report["embedding_provider"] = provider_name
+        report["embedding_model"] = model
+        report["embedding_dimensions"] = dimensions
+
+    # Measure the prepared input before any paid call: per-source counts, token total/cost, request
+    # count, vector-store footprint, and a hard per-input token ceiling that fails with the offending
+    # document id rather than letting the provider reject or truncate mid-build.
+    report["preflight"] = build_embedding_preflight(
+        documents,
+        model=model,
+        dimensions=dimensions,
+        batch_size=batch_size or settings.embedding_document_batch_size,
+        max_input_tokens=settings.embedding_max_input_tokens,
+        usd_per_million_tokens=settings.embedding_usd_per_million_input_tokens,
+    )
     if dry_run:
         report["dry_run"] = True
         return report
@@ -199,6 +222,62 @@ def semantic_status(
     if config_mismatches:
         status["config_mismatches"] = config_mismatches
     return status
+
+
+def build_embedding_preflight(
+    documents: list[SearchIndexDocument],
+    *,
+    model: str,
+    dimensions: int,
+    batch_size: int,
+    max_input_tokens: int,
+    usd_per_million_tokens: float,
+) -> dict[str, Any]:
+    """Measure prepared embedding input before paying; enforce the per-input token ceiling.
+
+    Tokenizes each document exactly as it will be embedded and raises ``embedding_input_too_long`` with
+    the offending document id if any input exceeds ``max_input_tokens`` — so an over-limit document
+    fails the whole build up front instead of after partial paid embedding. Returns the planning
+    summary (per-source counts, token total, request/footprint estimates) the dry-run reports.
+    """
+    counter = TokenCounter(model=model)
+    source_counts: dict[str, int] = {}
+    total_tokens = 0
+    max_tokens = 0
+    max_document_id: str | None = None
+    for doc in documents:
+        text = prepare_embedding_input(doc.content, doc.metadata.language_code)
+        tokens = counter.count(text)
+        if tokens > max_input_tokens:
+            raise EmbeddingError(
+                f"document {doc.id} has {tokens} tokens, exceeds max {max_input_tokens}",
+                reason="embedding_input_too_long",
+                detail={
+                    "document_id": doc.id,
+                    "tokens": tokens,
+                    "max_input_tokens": max_input_tokens,
+                },
+            )
+        total_tokens += tokens
+        if tokens > max_tokens:
+            max_tokens, max_document_id = tokens, doc.id
+        source = doc.metadata.source_id
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    report: dict[str, Any] = {
+        "document_count": len(documents),
+        "source_counts": source_counts,
+        "token_estimate_method": counter.method,
+        "total_input_tokens": total_tokens,
+        "max_document_tokens": max_tokens,
+        "max_document_id": max_document_id,
+        "max_input_tokens": max_input_tokens,
+        "request_count": ceil(len(documents) / batch_size) if batch_size > 0 else 0,
+        "estimated_vector_bytes": len(documents) * dimensions * 4,
+    }
+    if usd_per_million_tokens > 0:
+        report["estimated_usd"] = round(total_tokens / 1_000_000 * usd_per_million_tokens, 6)
+    return report
 
 
 def _store(settings: Settings) -> QdrantStore:

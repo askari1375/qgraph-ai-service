@@ -22,13 +22,15 @@ def _provider() -> DeterministicEmbeddingProvider:
     return DeterministicEmbeddingProvider(dimensions=8)
 
 
-def _settings(tmp_path) -> Settings:
-    return Settings(
+def _settings(tmp_path, **overrides) -> Settings:
+    values = dict(
         qdrant_collection_alias="qgraph-ayah-semantic-active",
         qdrant_collection_prefix="qgraph-ayah-semantic",
         qdrant_vector_name="content",
         semantic_index_profiles_dir=tmp_path,
     )
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _ayah(surah: int, ayah: int, global_number: int) -> dict:
@@ -148,6 +150,37 @@ def test_dry_run_writes_nothing_and_skips_provider(monkeypatch, tmp_path):
     assert report["language_counts"] == {"ar": 2, "en": 2, "fa": 2}
     assert report["embedding_dimensions"] == 8
     assert store.list_collections() == []  # nothing created
+    # The preflight measured the prepared input without any paid call.
+    preflight = report["preflight"]
+    assert preflight["document_count"] == 6
+    assert preflight["source_counts"] == {"quran-arabic": 2, "en.arberry": 2, "fa.moezzi": 2}
+    assert preflight["total_input_tokens"] > 0
+    assert preflight["request_count"] == 1
+    assert preflight["estimated_vector_bytes"] == 6 * 8 * 4
+
+
+def test_dry_run_estimates_cost_when_price_configured(monkeypatch, tmp_path):
+    _patch_corpus(monkeypatch, _snapshot())
+    settings = _settings(tmp_path, embedding_usd_per_million_input_tokens=0.13)
+    report = builder.build_semantic_collection(
+        settings=settings, store=_store(), provider=_provider(), dry_run=True
+    )
+    preflight = report["preflight"]
+    assert preflight["estimated_usd"] == round(
+        preflight["total_input_tokens"] / 1_000_000 * 0.13, 6
+    )
+
+
+def test_preflight_rejects_over_long_input(monkeypatch, tmp_path):
+    _patch_corpus(monkeypatch, _snapshot())
+    # A 1-token ceiling makes every prepared input over-long, so the build fails before paying.
+    settings = _settings(tmp_path, embedding_max_input_tokens=1)
+    from src.search.embeddings.contracts import EmbeddingError
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        builder.build_semantic_collection(settings=settings, store=_store(), provider=_provider())
+    assert excinfo.value.reason == "embedding_input_too_long"
+    assert "document_id" in excinfo.value.detail
 
 
 def test_build_activate_then_status(monkeypatch, tmp_path):

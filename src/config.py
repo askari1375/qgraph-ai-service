@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_timeout_seconds: float = 30.0
     embedding_max_retries: int = 2
+    # The provider's hard per-input token ceiling; the build preflight fails (with the offending
+    # document id) before any paid call rather than letting the provider truncate or reject mid-build.
+    # Production: text-embedding-3-large accepts 8192 tokens per input.
+    embedding_max_input_tokens: int = 8192
+    # Provider input price for the dry-run cost estimate only; 0 => the estimate is omitted. Production:
+    # 0.13 (text-embedding-3-large is $0.13 per 1M input tokens). Never used for billing, only planning.
+    embedding_usd_per_million_input_tokens: float = 0.0
 
     segmentation_model_name: str = "segmentation-pipeline"
     segmentation_model_version: str = "2026-04-01"
