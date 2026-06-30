@@ -9,7 +9,9 @@ from src.api.schemas.search import (
     SearchReadinessResponse,
 )
 from src.config import get_settings
+from src.search.embeddings.contracts import EmbeddingProvider
 from src.search.opensearch_client import OpenSearchAdapter
+from src.search.vector.qdrant_store import QdrantStore
 from src.services.search_jobs import (
     ASYNC_SEARCH_NOT_IMPLEMENTED_MESSAGE,
     ASYNC_SEARCH_NOT_IMPLEMENTED_REASON,
@@ -29,6 +31,16 @@ def get_search_adapter(request: Request) -> OpenSearchAdapter | None:
     return getattr(request.app.state, "search_adapter", None)
 
 
+def get_qdrant_store(request: Request) -> QdrantStore | None:
+    """Return the app-scoped Qdrant store (None unless the hybrid backends are configured)."""
+    return getattr(request.app.state, "qdrant_store", None)
+
+
+def get_embedding_provider(request: Request) -> EmbeddingProvider | None:
+    """Return the app-scoped embedding provider (None unless a production provider is configured)."""
+    return getattr(request.app.state, "embedding_provider", None)
+
+
 @router.post("/plan", response_model=SearchPlanResponse)
 def search_plan(payload: SearchPlanRequest) -> SearchPlanResponse:
     return build_planning_response(payload)
@@ -38,9 +50,13 @@ def search_plan(payload: SearchPlanRequest) -> SearchPlanResponse:
 def search_execute(
     payload: SearchExecuteRequest,
     adapter: OpenSearchAdapter | None = Depends(get_search_adapter),
+    store: QdrantStore | None = Depends(get_qdrant_store),
+    provider: EmbeddingProvider | None = Depends(get_embedding_provider),
 ) -> SearchExecuteResponse:
     try:
-        return build_search_execute_response(payload, adapter=adapter)
+        return build_search_execute_response(
+            payload, adapter=adapter, store=store, provider=provider
+        )
     except SearchRetrievalError as exc:
         raise _search_retrieval_http_error(exc) from exc
 

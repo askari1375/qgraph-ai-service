@@ -31,7 +31,8 @@ def build_planning_response(
         mode=mode,
         policy_label=POLICY_LABEL,
         policy_snapshot={"requester": requester.model_dump()},
-        routing_metadata={"mode": mode, "retrieval": "lexical_opensearch"},
+        # Report the configured retrieval policy (lexical_v1 / hybrid_v1) rather than a hard-coded label.
+        routing_metadata={"mode": mode, "retrieval": cfg.search_retrieval_policy},
         backend_name=cfg.service_name,
         backend_version=cfg.service_version,
     )

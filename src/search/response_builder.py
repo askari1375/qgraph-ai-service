@@ -23,15 +23,43 @@ from src.api.schemas.search import (
     SearchResponseBlock,
     SearchResultItem,
 )
-from src.search.contracts import ContentType, RetrievalCandidate
+from src.search.contracts import (
+    RETRIEVER_OPENSEARCH_LEXICAL,
+    RETRIEVER_QDRANT_DENSE,
+    ContentType,
+    RetrievalCandidate,
+)
 
 OPEN_SEARCH_BACKEND_NAME = "open_search"
+HYBRID_BACKEND_NAME = "hybrid_rrf_v1"
+
+# Retrieval-policy strings (the canonical constants live in services.search_service; duplicated here as
+# bare literals to keep the response builder free of a service-layer import).
+_LEXICAL_POLICY = "lexical_v1"
+_HYBRID_POLICY = "hybrid_v1"
+#: Conservative hybrid confidence heuristic id — RRF scores are not calibrated probabilities.
+HYBRID_CONFIDENCE_POLICY = "qgraph_hybrid_confidence.v1"
 
 _NO_MATCHES_WARNING = "No lexical matches were returned."
+
+_BLOCK_EXPLANATION = {
+    _LEXICAL_POLICY: "OpenSearch BM25 lexical retrieval over Quran corpus documents.",
+    _HYBRID_POLICY: (
+        "Hybrid retrieval: OpenSearch BM25 lexical + Qdrant dense semantic, fused by weighted RRF."
+    ),
+}
+_ITEM_EXPLANATION = {
+    _LEXICAL_POLICY: "Ranked by OpenSearch lexical score.",
+    _HYBRID_POLICY: "Ranked by weighted reciprocal rank fusion of lexical and semantic retrieval.",
+}
 
 #: Display order for translation-language blocks; languages outside this list follow, sorted by code.
 _LANGUAGE_ORDER = ("en", "fa")
 _LANGUAGE_LABELS = {"en": "English", "fa": "Persian"}
+
+
+def _backend_name(retrieval_policy: str) -> str:
+    return HYBRID_BACKEND_NAME if retrieval_policy == _HYBRID_POLICY else OPEN_SEARCH_BACKEND_NAME
 
 
 def build_execute_response(
@@ -43,10 +71,18 @@ def build_execute_response(
     provenance: dict[str, Any],
     render_schema_version: str,
     confidence_scale_k: float,
+    retrieval_policy: str = _LEXICAL_POLICY,
 ) -> SearchExecuteResponse:
-    """Build the Django-facing response: chart, then Arabic verses, then per-language translations."""
+    """Build the Django-facing response: chart, then Arabic verses, then per-language translations.
+
+    ``retrieval_policy`` selects backend labelling, explanations, and the confidence heuristic; the
+    candidate shape is identical for both policies, so blocks/items render the same way.
+    """
+    backend_name = _backend_name(retrieval_policy)
     overall_confidence = _confidence(
-        [*ayah_candidates, *translation_candidates], scale_k=confidence_scale_k
+        [*ayah_candidates, *translation_candidates],
+        policy=retrieval_policy,
+        scale_k=confidence_scale_k,
     )
     blocks: list[SearchResponseBlock] = []
     order = _OrderCounter()
@@ -63,6 +99,8 @@ def build_execute_response(
             language_code="ar",
             provenance=provenance,
             confidence_scale_k=confidence_scale_k,
+            retrieval_policy=retrieval_policy,
+            backend_name=backend_name,
             warn_when_empty=True,
         )
     )
@@ -77,6 +115,8 @@ def build_execute_response(
                 language_code=language_code,
                 provenance=provenance,
                 confidence_scale_k=confidence_scale_k,
+                retrieval_policy=retrieval_policy,
+                backend_name=backend_name,
                 warn_when_empty=False,
             )
         )
@@ -85,7 +125,7 @@ def build_execute_response(
         title=f"Search results for {request.query}",
         overall_confidence=overall_confidence,
         render_schema_version=render_schema_version,
-        metadata={"backend": OPEN_SEARCH_BACKEND_NAME, **provenance},
+        metadata={"backend": backend_name, **provenance},
         blocks=blocks,
     )
 
@@ -108,9 +148,11 @@ def _result_block(
     language_code: str,
     provenance: dict[str, Any],
     confidence_scale_k: float,
+    retrieval_policy: str,
+    backend_name: str,
     warn_when_empty: bool,
 ) -> SearchResponseBlock:
-    items = _build_items(candidates, provenance)
+    items = _build_items(candidates, provenance, retrieval_policy, backend_name)
     return SearchResponseBlock(
         order=order,
         block_type="ayah_results",
@@ -120,18 +162,22 @@ def _result_block(
             "result_count": len(items),
             "language_code": language_code,
         },
-        explanation="OpenSearch BM25 lexical retrieval over Quran corpus documents.",
-        confidence=_confidence(candidates, scale_k=confidence_scale_k),
-        provenance={"backend": OPEN_SEARCH_BACKEND_NAME, **provenance},
+        explanation=_BLOCK_EXPLANATION.get(retrieval_policy, _BLOCK_EXPLANATION[_LEXICAL_POLICY]),
+        confidence=_confidence(candidates, policy=retrieval_policy, scale_k=confidence_scale_k),
+        provenance={"backend": backend_name, **provenance},
         warning_text=_NO_MATCHES_WARNING if (warn_when_empty and not items) else "",
         items=items,
     )
 
 
 def _build_items(
-    candidates: list[RetrievalCandidate], provenance: dict[str, Any]
+    candidates: list[RetrievalCandidate],
+    provenance: dict[str, Any],
+    retrieval_policy: str,
+    backend_name: str,
 ) -> list[SearchResultItem]:
     max_score = max((candidate.score for candidate in candidates), default=0.0)
+    explanation = _ITEM_EXPLANATION.get(retrieval_policy, _ITEM_EXPLANATION[_LEXICAL_POLICY])
     items: list[SearchResultItem] = []
     # Re-rank 1..n within the block so each block reads as its own ranked list.
     for rank, candidate in enumerate(candidates, start=1):
@@ -158,16 +204,38 @@ def _build_items(
                     "source_id": metadata.get("source_id"),
                     "source_name": metadata.get("source_name"),
                 },
-                explanation="Ranked by OpenSearch lexical score.",
-                provenance={
-                    "backend": OPEN_SEARCH_BACKEND_NAME,
-                    "document_id": candidate.document_id,
-                    "lexical_score": candidate.score,
-                    **provenance,
-                },
+                explanation=explanation,
+                provenance=_item_provenance(candidate, provenance, backend_name),
             )
         )
     return items
+
+
+def _item_provenance(
+    candidate: RetrievalCandidate, provenance: dict[str, Any], backend_name: str
+) -> dict[str, Any]:
+    """Per-item provenance: per-backend ranks/scores and the fused score when a candidate was fused.
+
+    A lexical-only candidate (no fusion ``debug``) keeps the flat ``lexical_score`` shape; a fused
+    candidate exposes each backend's rank/score plus the fused score/rank for debugging and eval.
+    """
+    item_prov: dict[str, Any] = {"backend": backend_name, "document_id": candidate.document_id}
+    per_retriever = candidate.debug.get("per_retriever") if candidate.debug else None
+    if per_retriever:
+        lexical = per_retriever.get(RETRIEVER_OPENSEARCH_LEXICAL)
+        semantic = per_retriever.get(RETRIEVER_QDRANT_DENSE)
+        if lexical is not None:
+            item_prov["lexical_rank"] = lexical["rank"]
+            item_prov["lexical_score"] = lexical["score"]
+        if semantic is not None:
+            item_prov["semantic_rank"] = semantic["rank"]
+            item_prov["semantic_similarity"] = semantic["score"]
+        item_prov["fused_score"] = candidate.debug.get("fusion", {}).get("fused_score")
+        item_prov["fused_rank"] = candidate.rank
+    else:
+        item_prov["lexical_score"] = candidate.score
+    item_prov.update(provenance)
+    return item_prov
 
 
 def _group_by_language(
@@ -232,12 +300,33 @@ def _reference(candidate: RetrievalCandidate) -> str:
     return "Quran corpus match"
 
 
-def _confidence(candidates: list[RetrievalCandidate], *, scale_k: float) -> float:
-    """Map the strongest absolute lexical score to a bounded 0..1 confidence."""
+def _confidence(candidates: list[RetrievalCandidate], *, policy: str, scale_k: float) -> float:
+    """Ranker-aware confidence: the BM25 heuristic for lexical, a conservative one for hybrid RRF."""
+    if policy == _HYBRID_POLICY:
+        return _hybrid_confidence(candidates)
+    return _lexical_confidence(candidates, scale_k=scale_k)
+
+
+def _lexical_confidence(candidates: list[RetrievalCandidate], *, scale_k: float) -> float:
+    """Map the strongest absolute BM25 score to a bounded 0..1 confidence."""
     top_absolute_score = max((candidate.score for candidate in candidates), default=0.0)
     if top_absolute_score <= 0.0 or scale_k <= 0.0:
         return 0.0
     return 1.0 - exp(-top_absolute_score / scale_k)
+
+
+def _hybrid_confidence(candidates: list[RetrievalCandidate]) -> float:
+    """Conservative confidence from cross-backend agreement — never a calibrated RRF probability.
+
+    RRF scores are not comparable to a probability, so confidence is driven by *agreement*: the share
+    of results both retrievers surfaced. Bounded to a deliberately narrow band so the UI never reads a
+    fused score as certainty. Versioned as :data:`HYBRID_CONFIDENCE_POLICY`.
+    """
+    if not candidates:
+        return 0.0
+    agreed = sum(1 for c in candidates if c.debug and len(c.debug.get("per_retriever", {})) >= 2)
+    overlap = agreed / len(candidates)
+    return round(0.35 + 0.4 * overlap, 4)
 
 
 def _snippet(text: str, max_length: int = 240) -> str:

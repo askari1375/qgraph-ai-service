@@ -11,22 +11,40 @@ from src.api.health import router as health_router
 from src.api.search import router as search_router
 from src.api.segmentation import router as segmentation_router
 from src.config import get_settings
+from src.search.embeddings.factory import build_embedding_provider
+from src.search.vector.qdrant_store import build_qdrant_store
 from src.services.search_service import build_search_adapter
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # One OpenSearch client per process, reused across requests and closed on shutdown. Built only
-    # when a cluster URL is configured (constructing the client does not open a connection); when it
-    # is not, search requests fail loudly rather than silently using a per-request client.
+    # One backend client per process, reused across requests and closed on shutdown. Each is built
+    # only when its config is present (constructing a client does not open a connection); when it is
+    # not, the request path fails loudly rather than silently using a per-request client. The hybrid
+    # backends (Qdrant, embedding provider) are needed only by the hybrid_v1 retrieval policy.
     settings = get_settings()
     app.state.search_adapter = build_search_adapter(settings) if settings.opensearch_url else None
+    app.state.qdrant_store = (
+        build_qdrant_store(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+            timeout_seconds=settings.qdrant_timeout_seconds,
+        )
+        if settings.qdrant_url
+        else None
+    )
+    app.state.embedding_provider = (
+        build_embedding_provider(settings) if settings.embedding_provider else None
+    )
     try:
         yield
     finally:
         adapter = getattr(app.state, "search_adapter", None)
         if adapter is not None:
             adapter.close()
+        qdrant_store = getattr(app.state, "qdrant_store", None)
+        if qdrant_store is not None:
+            qdrant_store.close()
 
 
 def create_app() -> FastAPI:

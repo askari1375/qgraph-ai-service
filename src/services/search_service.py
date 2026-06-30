@@ -7,7 +7,11 @@ from src.api.schemas.search import (
     SearchReadinessResponse,
 )
 from src.config import Settings, get_settings
-from src.search.contracts import QueryContext, SearchFilters
+from src.search.contracts import QueryContext, Retriever, SearchFilters
+from src.search.embeddings.contracts import EmbeddingError, EmbeddingProvider
+from src.search.embeddings.factory import build_embedding_provider
+from src.search.embeddings.query import embed_query_for_search
+from src.search.fusion import fusion_profile
 from src.search.opensearch_client import (
     OpenSearchAdapter,
     OpenSearchError,
@@ -25,10 +29,16 @@ from src.search.retrievers.lexical_opensearch import (
     build_search_body,
     compatibility_mismatches,
 )
+from src.search.retrievers.semantic_qdrant import SemanticQdrantRetriever
+from src.search.vector.qdrant_store import QdrantError, QdrantStore, build_qdrant_store
 
 # A token guaranteed to appear across the Quran corpus, used to prove the served query path returns
 # hits (not just that the cluster is up) in the readiness probe.
 READINESS_SMOKE_QUERY = "الله"
+
+#: Retrieval policies (config ``QGRAPH_AI_SEARCH_RETRIEVAL_POLICY``). Both run real backends.
+LEXICAL_POLICY = "lexical_v1"
+HYBRID_POLICY = "hybrid_v1"
 
 
 class SearchRetrievalError(Exception):
@@ -51,59 +61,109 @@ def build_search_execute_response(
     request: SearchExecuteRequest,
     settings: Settings | None = None,
     adapter: OpenSearchAdapter | None = None,
+    store: QdrantStore | None = None,
+    provider: EmbeddingProvider | None = None,
 ) -> SearchExecuteResponse:
-    """Run lexical retrieval against the serving alias and render the response.
+    """Run the configured retrieval policy against the serving alias(es) and render the response.
 
-    OpenSearch is the only backend: a missing/misconfigured cluster surfaces as a
-    ``SearchRetrievalError`` (never as fake results). Tests inject a fake ``adapter``.
+    ``lexical_v1`` runs OpenSearch only; ``hybrid_v1`` also runs Qdrant and fuses by weighted RRF.
+    Both are real backends — a missing/misconfigured backend surfaces as a ``SearchRetrievalError``
+    (never fake results, never a silent fall back to lexical-only). Tests inject the fake backends.
     """
     cfg = settings if settings is not None else get_settings()
     filters = SearchFilters.from_request_filters(request.filters)
     top_k = _resolve_top_k(request.output_preferences)
+    policy = cfg.search_retrieval_policy
+    alias = cfg.opensearch_alias
     # Surah-name documents are indexed but intentionally not served by this execute path in V1: the
-    # default scope is Arabic ayat + translations. Surah-name search is index-only for now.
-    # Arabic verses and translations are retrieved in separate scoped queries so each result block is
-    # independently populated and ranked, and the distribution chart reflects the verses alone (stable
-    # regardless of the translation control). Single-content-type scopes don't need collapse.
+    # default scope is Arabic ayat + translations. Arabic verses and translations are retrieved in
+    # separate scoped queries so each result block is independently populated and ranked, and the
+    # distribution chart reflects the verses alone. Single-content-type scopes don't need collapse.
     ayah_context = QueryContext(
         raw_query=request.query, filters=filters.quran_ayah_scope(), top_k=top_k, collapse=False
     )
-    alias = cfg.opensearch_alias
+    translation_context = (
+        QueryContext(
+            raw_query=request.query,
+            filters=filters.translation_scope(),
+            top_k=top_k,
+            collapse=False,
+        )
+        if filters.include_translations
+        else None
+    )
     try:
         active_adapter = adapter if adapter is not None else build_search_adapter(cfg)
-        pipeline = RetrievalPipeline([LexicalRetriever(active_adapter, alias)])
-        ayah_candidates = pipeline.run(ayah_context)
-        translation_candidates = (
-            pipeline.run(
-                QueryContext(
-                    raw_query=request.query,
-                    filters=filters.translation_scope(),
-                    top_k=top_k,
-                    collapse=False,
+        retrievers: list[Retriever] = [LexicalRetriever(active_adapter, alias)]
+        semantic_provenance: dict[str, Any] = {}
+        if policy == HYBRID_POLICY:
+            active_store = store if store is not None else _build_qdrant_store(cfg)
+            retrievers.append(
+                SemanticQdrantRetriever(
+                    active_store, cfg.qdrant_collection_alias, cfg.qdrant_vector_name
                 )
             )
-            if filters.include_translations
-            else []
+            active_provider = provider if provider is not None else build_embedding_provider(cfg)
+            # One query embedding, reused across the ayah and translation scopes.
+            embedding = embed_query_for_search(active_provider, ayah_context)
+            ayah_context = ayah_context.model_copy(update={"query_embedding": embedding})
+            if translation_context is not None:
+                translation_context = translation_context.model_copy(
+                    update={"query_embedding": embedding}
+                )
+            semantic_provenance = _semantic_provenance(
+                active_provider, active_store.resolve_alias(cfg.qdrant_collection_alias)
+            )
+        pipeline = RetrievalPipeline(retrievers)
+        ayah_candidates = pipeline.run(ayah_context)
+        translation_candidates = (
+            pipeline.run(translation_context) if translation_context is not None else []
         )
         distribution = aggregate_surah_distribution(active_adapter, alias, ayah_context)
         profile = read_index_profile(active_adapter, alias)
     except OpenSearchError as exc:
         raise SearchRetrievalError(
+            exc.message, reason=exc.reason, status_code=exc.status_code, detail=exc.detail
+        ) from exc
+    except (EmbeddingError, QdrantError) as exc:
+        # No silent fallback: a hybrid query whose semantic side fails is a service error.
+        raise SearchRetrievalError(
             exc.message,
             reason=exc.reason,
-            status_code=exc.status_code,
+            status_code=getattr(exc, "status_code", None),
             detail=exc.detail,
         ) from exc
 
+    provenance = {**_profile_provenance(profile), **semantic_provenance, "retrieval_policy": policy}
     return build_execute_response(
         request,
         ayah_candidates=ayah_candidates,
         translation_candidates=translation_candidates,
         surah_distribution=distribution,
-        provenance=_profile_provenance(profile),
+        provenance=provenance,
         render_schema_version=cfg.render_schema_version,
         confidence_scale_k=cfg.search_confidence_scale_k,
+        retrieval_policy=policy,
     )
+
+
+def _build_qdrant_store(settings: Settings) -> QdrantStore:
+    return build_qdrant_store(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+        timeout_seconds=settings.qdrant_timeout_seconds,
+    )
+
+
+def _semantic_provenance(provider: EmbeddingProvider, collection: str) -> dict[str, Any]:
+    """Runtime fusion/semantic provenance — distinct from the immutable collection profile."""
+    return {
+        "semantic_collection": collection,
+        "embedding_provider": provider.profile.provider,
+        "embedding_model": provider.profile.model,
+        "embedding_dimensions": provider.profile.dimensions,
+        "fusion_profile": fusion_profile(),
+    }
 
 
 def build_search_adapter(settings: Settings) -> OpenSearchHTTPAdapter:
