@@ -31,11 +31,10 @@ from src.search.retrievers.lexical_opensearch import (
 )
 from src.search.retrievers.semantic_qdrant import SemanticQdrantRetriever
 from src.search.vector.profile import (
-    collection_config_mismatches,
     expected_runtime_compatibility,
-    hybrid_corpus_mismatches,
-    profile_compatibility_mismatches,
+    first_semantic_mismatch,
     read_semantic_profile,
+    semantic_artifact_mismatches,
 )
 from src.search.vector.qdrant_store import QdrantError, QdrantStore, build_qdrant_store
 
@@ -101,10 +100,18 @@ def build_search_execute_response(
     )
     try:
         active_adapter = adapter if adapter is not None else build_search_adapter(cfg)
+        # Read the active lexical profile once, up front: it both gates the lexical↔semantic corpus
+        # check below and supplies the response provenance.
+        lexical_profile = read_index_profile(active_adapter, alias)
         retrievers: list[Retriever] = [LexicalRetriever(active_adapter, alias)]
         semantic_provenance: dict[str, Any] = {}
         if policy == HYBRID_POLICY:
             active_store = store if store is not None else _build_qdrant_store(cfg)
+            collection = active_store.resolve_alias(cfg.qdrant_collection_alias)
+            # Verify the active collection is servable (right provider/model/dimensions, live config,
+            # and lexical↔semantic corpus) *before* the paid query embedding — a same-dimension but
+            # different-model collection would otherwise return silently meaningless similarities.
+            _enforce_semantic_compatibility(cfg, active_store, collection, lexical_profile)
             retrievers.append(
                 SemanticQdrantRetriever(
                     active_store, cfg.qdrant_collection_alias, cfg.qdrant_vector_name
@@ -118,16 +125,13 @@ def build_search_execute_response(
                 translation_context = translation_context.model_copy(
                     update={"query_embedding": embedding}
                 )
-            semantic_provenance = _semantic_provenance(
-                active_provider, active_store.resolve_alias(cfg.qdrant_collection_alias)
-            )
+            semantic_provenance = _semantic_provenance(active_provider, collection)
         pipeline = RetrievalPipeline(retrievers)
         ayah_candidates = pipeline.run(ayah_context)
         translation_candidates = (
             pipeline.run(translation_context) if translation_context is not None else []
         )
         distribution = aggregate_surah_distribution(active_adapter, alias, ayah_context)
-        profile = read_index_profile(active_adapter, alias)
     except OpenSearchError as exc:
         raise SearchRetrievalError(
             exc.message, reason=exc.reason, status_code=exc.status_code, detail=exc.detail
@@ -141,7 +145,11 @@ def build_search_execute_response(
             detail=exc.detail,
         ) from exc
 
-    provenance = {**_profile_provenance(profile), **semantic_provenance, "retrieval_policy": policy}
+    provenance = {
+        **_profile_provenance(lexical_profile),
+        **semantic_provenance,
+        "retrieval_policy": policy,
+    }
     return build_execute_response(
         request,
         ayah_candidates=ayah_candidates,
@@ -152,6 +160,39 @@ def build_search_execute_response(
         confidence_scale_k=cfg.search_confidence_scale_k,
         retrieval_policy=policy,
     )
+
+
+def _enforce_semantic_compatibility(
+    settings: Settings,
+    store: QdrantStore,
+    collection: str,
+    lexical_profile: dict[str, Any],
+) -> None:
+    """Raise ``SearchRetrievalError`` (503) if the active semantic collection is not safe to serve.
+
+    Shares the one validator with readiness and CLI status. Runs before any paid embedding so a
+    misconfigured collection costs nothing and never returns silently meaningless similarities.
+    """
+    profile = read_semantic_profile(collection, directory=settings.semantic_index_profiles_dir)
+    mismatches = semantic_artifact_mismatches(
+        profile=profile,
+        collection_config=store.collection_config(collection),
+        runtime_expected=expected_runtime_compatibility(
+            embedding_provider=settings.embedding_provider,
+            embedding_model=settings.embedding_model,
+            embedding_dimensions=settings.embedding_dimensions,
+        ),
+        lexical_profile=lexical_profile,
+    )
+    found = first_semantic_mismatch(mismatches)
+    if found is not None:
+        reason, detail = found
+        raise SearchRetrievalError(
+            f"active semantic collection {collection} is not servable ({reason})",
+            reason=reason,
+            status_code=503,
+            detail={"collection": collection, "mismatches": detail},
+        )
 
 
 def _build_qdrant_store(settings: Settings) -> QdrantStore:
@@ -328,39 +369,29 @@ def _hybrid_readiness_checks(
                 detail={"point_count": point_count},
             )
         )
-        code_mismatches = profile_compatibility_mismatches(
-            profile,
-            expected=expected_runtime_compatibility(
+        mismatches = semantic_artifact_mismatches(
+            profile=profile,
+            collection_config=store.collection_config(collection),
+            runtime_expected=expected_runtime_compatibility(
                 embedding_provider=settings.embedding_provider,
                 embedding_model=settings.embedding_model,
                 embedding_dimensions=settings.embedding_dimensions,
             ),
+            lexical_profile=lexical_profile,
         )
-        checks.append(
-            SearchReadinessCheck(
-                name="semantic_profile_compatible",
-                ok=not code_mismatches,
-                detail={"mismatches": code_mismatches} if code_mismatches else {},
+        for name, category in (
+            ("semantic_profile_compatible", "runtime_compatibility"),
+            ("semantic_collection_config_match", "collection_config"),
+            ("hybrid_corpus_compatible", "lexical_corpus"),
+        ):
+            failures = mismatches[category]
+            checks.append(
+                SearchReadinessCheck(
+                    name=name,
+                    ok=not failures,
+                    detail={"mismatches": failures} if failures else {},
+                )
             )
-        )
-        config_mismatches = collection_config_mismatches(
-            store.collection_config(collection), profile
-        )
-        checks.append(
-            SearchReadinessCheck(
-                name="semantic_collection_config_match",
-                ok=not config_mismatches,
-                detail={"mismatches": config_mismatches} if config_mismatches else {},
-            )
-        )
-        corpus_mismatches = hybrid_corpus_mismatches(lexical_profile, profile)
-        checks.append(
-            SearchReadinessCheck(
-                name="hybrid_corpus_compatible",
-                ok=not corpus_mismatches,
-                detail={"mismatches": corpus_mismatches} if corpus_mismatches else {},
-            )
-        )
         return checks, collection
     except QdrantError as exc:
         checks.append(

@@ -42,9 +42,9 @@ from src.search.vector.profile import (
     build_semantic_profile,
     collection_config_mismatches,
     delete_semantic_profile,
-    expected_code_compatibility,
-    profile_compatibility_mismatches,
+    expected_runtime_compatibility,
     read_semantic_profile,
+    semantic_artifact_mismatches,
     write_semantic_profile,
 )
 from src.search.vector.qdrant_store import (
@@ -209,18 +209,25 @@ def semantic_status(
             return status
         raise
     profile = read_semantic_profile(collection, directory=settings.semantic_index_profiles_dir)
-    code_mismatches = profile_compatibility_mismatches(
-        profile, expected=expected_code_compatibility()
+    # The same active-artifact validator readiness/execute use, against the configured runtime provider
+    # — so ``status`` cannot report compatible while a different model/dimension would actually serve.
+    # The lexical↔semantic corpus gate stays in readiness/execute, where the OpenSearch profile is read.
+    mismatches = semantic_artifact_mismatches(
+        profile=profile,
+        collection_config=store.collection_config(collection),
+        runtime_expected=expected_runtime_compatibility(
+            embedding_provider=settings.embedding_provider,
+            embedding_model=settings.embedding_model,
+            embedding_dimensions=settings.embedding_dimensions,
+        ),
     )
-    config_mismatches = collection_config_mismatches(store.collection_config(collection), profile)
     status["active_collection"] = collection
     status["profile"] = profile.model_dump()
     status["point_count"] = store.count_points(collection)
-    status["compatible"] = not code_mismatches and not config_mismatches
-    if code_mismatches:
-        status["mismatches"] = code_mismatches
-    if config_mismatches:
-        status["config_mismatches"] = config_mismatches
+    status["compatible"] = not any(mismatches.values())
+    failures = {category: detail for category, detail in mismatches.items() if detail}
+    if failures:
+        status["mismatches"] = failures
     return status
 
 

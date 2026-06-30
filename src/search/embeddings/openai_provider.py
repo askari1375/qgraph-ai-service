@@ -103,12 +103,22 @@ def _ordered_vectors(response: Any, *, expected_count: int) -> list[list[float]]
         )
     try:
         ordered = sorted(data, key=lambda item: item.index)
-        return [list(item.embedding) for item in ordered]
+        indices = [item.index for item in ordered]
     except (AttributeError, TypeError) as exc:
         raise EmbeddingError(
             "embedding response is malformed",
             reason="embedding_response_invalid",
         ) from exc
+    # Sorting alone is not enough: a duplicated or out-of-range index would silently map a vector to the
+    # wrong document. With the count already checked, requiring the sorted indices to equal 0..n-1 proves
+    # an exact permutation (each input embedded exactly once).
+    if indices != list(range(expected_count)):
+        raise EmbeddingError(
+            "embedding response indices are not a 0..n-1 permutation",
+            reason="embedding_response_invalid",
+            detail={"expected_count": expected_count, "indices": indices},
+        )
+    return [list(item.embedding) for item in ordered]
 
 
 @contextmanager

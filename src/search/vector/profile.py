@@ -275,6 +275,52 @@ def collection_config_mismatches(
     }
 
 
+#: Each compatibility category and the failure reason it maps to. Ordered so the *most fundamental*
+#: disagreement (wrong provider/model) is reported before the structural and cross-backend ones.
+SEMANTIC_MISMATCH_REASONS: dict[str, str] = {
+    "runtime_compatibility": "semantic_profile_mismatch",
+    "collection_config": "semantic_collection_config_mismatch",
+    "lexical_corpus": "hybrid_corpus_mismatch",
+}
+
+
+def semantic_artifact_mismatches(
+    *,
+    profile: SemanticIndexProfile,
+    collection_config: CollectionConfig,
+    runtime_expected: dict[str, Any],
+    lexical_profile: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """The full active-artifact compatibility result, in one place for execute/readiness/status.
+
+    Returns one entry per category (each possibly empty): ``runtime_compatibility`` (the active
+    collection vs. the configured runtime provider/model/dimensions and code constants),
+    ``collection_config`` (the sidecar vs. the live Qdrant vector config), and — only when a
+    ``lexical_profile`` is supplied — ``lexical_corpus`` (the lexical and semantic corpora a hybrid
+    query fuses). An all-empty result means the active collection is safe to serve.
+    """
+    report: dict[str, dict[str, Any]] = {
+        "runtime_compatibility": profile_compatibility_mismatches(
+            profile, expected=runtime_expected
+        ),
+        "collection_config": collection_config_mismatches(collection_config, profile),
+    }
+    if lexical_profile is not None:
+        report["lexical_corpus"] = hybrid_corpus_mismatches(lexical_profile, profile)
+    return report
+
+
+def first_semantic_mismatch(
+    report: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    """The first non-empty category as ``(reason, mismatches)``, or ``None`` when all compatible."""
+    for category, reason in SEMANTIC_MISMATCH_REASONS.items():
+        mismatches = report.get(category)
+        if mismatches:
+            return reason, mismatches
+    return None
+
+
 def profile_path(collection_name: str, *, directory: Path) -> Path:
     return directory / f"{collection_name}.json"
 

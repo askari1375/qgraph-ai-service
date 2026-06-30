@@ -185,7 +185,15 @@ def test_preflight_rejects_over_long_input(monkeypatch, tmp_path):
 
 def test_build_activate_then_status(monkeypatch, tmp_path):
     _patch_corpus(monkeypatch, _snapshot())
-    settings, store = _settings(tmp_path), _store()
+    # status now checks the active collection against the configured runtime provider, so the settings
+    # must name the same provider/model/dimensions the deterministic build used.
+    settings = _settings(
+        tmp_path,
+        embedding_provider="deterministic-test",
+        embedding_model="deterministic-test",
+        embedding_dimensions=8,
+    )
+    store = _store()
     report = builder.build_semantic_collection(settings=settings, store=store, provider=_provider())
 
     activation = builder.activate_semantic_collection(

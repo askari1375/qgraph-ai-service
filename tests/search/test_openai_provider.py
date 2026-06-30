@@ -90,6 +90,23 @@ def test_embed_documents_reassembles_out_of_order_response():
     assert provider.embed_documents(["a", "b", "c"]) == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
 
 
+def test_duplicate_response_index_is_invalid():
+    # Right count, but index 1 is missing and 0 is duplicated: sorting would silently map a vector to
+    # the wrong document, so the permutation check must reject it.
+    def handler(_model: str, _input: Sequence[str]) -> _Response:
+        return _Response(
+            [
+                _Item(index=0, embedding=[1.0, 1.0]),
+                _Item(index=0, embedding=[2.0, 2.0]),
+            ]
+        )
+
+    provider, _ = _provider(handler)
+    with pytest.raises(EmbeddingError) as excinfo:
+        provider.embed_documents(["a", "b"])
+    assert excinfo.value.reason == "embedding_response_invalid"
+
+
 def test_embed_query_returns_single_vector():
     provider, _ = _provider(_vectors_in_index_order([0.6, 0.8]))
     assert provider.embed_query("light") == [0.6, 0.8]
