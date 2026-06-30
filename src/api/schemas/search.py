@@ -107,6 +107,8 @@ class SearchReadinessResponse(BaseModel):
     ready: bool
     alias: str
     active_index: str | None = None
+    #: The active Qdrant collection under the hybrid policy; None under lexical_v1.
+    active_collection: str | None = None
     checks: list[SearchReadinessCheck] = Field(default_factory=list)
 
 

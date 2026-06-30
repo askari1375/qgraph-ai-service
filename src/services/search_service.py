@@ -30,6 +30,13 @@ from src.search.retrievers.lexical_opensearch import (
     compatibility_mismatches,
 )
 from src.search.retrievers.semantic_qdrant import SemanticQdrantRetriever
+from src.search.vector.profile import (
+    collection_config_mismatches,
+    expected_runtime_compatibility,
+    hybrid_corpus_mismatches,
+    profile_compatibility_mismatches,
+    read_semantic_profile,
+)
 from src.search.vector.qdrant_store import QdrantError, QdrantStore, build_qdrant_store
 
 # A token guaranteed to appear across the Quran corpus, used to prove the served query path returns
@@ -180,16 +187,22 @@ def build_search_adapter(settings: Settings) -> OpenSearchHTTPAdapter:
 def check_search_readiness(
     settings: Settings | None = None,
     adapter: OpenSearchAdapter | None = None,
+    store: QdrantStore | None = None,
+    provider: EmbeddingProvider | None = None,
 ) -> SearchReadinessResponse:
-    """Probe whether the search path can actually serve queries.
+    """Probe whether the configured retrieval policy can actually serve queries.
 
-    Confirms the serving alias resolves to exactly one index, the index build profile is compatible
-    with the running code, and a known smoke query returns at least one hit — so a deploy or monitor
-    cannot report search healthy while ``/v1/search/execute`` would return a service error.
+    For ``lexical_v1``: the serving alias resolves to one index, its build profile is compatible with
+    the running code, and a known smoke query returns a hit. For ``hybrid_v1``: additionally the
+    semantic alias resolves to one non-empty collection whose profile matches the runtime provider and
+    its own live Qdrant config, and the lexical/semantic corpora agree — so a deploy or monitor cannot
+    report search healthy while ``/v1/search/execute`` would return a service error. No paid embedding
+    call is made on the probe.
     """
     cfg = settings if settings is not None else get_settings()
     alias = cfg.opensearch_alias
     checks: list[SearchReadinessCheck] = []
+    active_collection: str | None = None
 
     if not cfg.opensearch_url:
         checks.append(
@@ -222,7 +235,8 @@ def check_search_readiness(
             )
         )
 
-        mismatches = compatibility_mismatches(read_index_profile(active_adapter, alias))
+        lexical_profile = read_index_profile(active_adapter, alias)
+        mismatches = compatibility_mismatches(lexical_profile)
         checks.append(
             SearchReadinessCheck(
                 name="index_profile_compatible",
@@ -248,6 +262,12 @@ def check_search_readiness(
                 detail={"query": READINESS_SMOKE_QUERY, "hit_count": hit_count},
             )
         )
+
+        if cfg.search_retrieval_policy == HYBRID_POLICY:
+            semantic_checks, active_collection = _hybrid_readiness_checks(
+                cfg, store, provider, lexical_profile
+            )
+            checks.extend(semantic_checks)
     except OpenSearchError as exc:
         checks.append(
             SearchReadinessCheck(
@@ -262,8 +282,95 @@ def check_search_readiness(
         ready=all(check.ok for check in checks),
         alias=alias,
         active_index=active_index,
+        active_collection=active_collection,
         checks=checks,
     )
+
+
+def _hybrid_readiness_checks(
+    settings: Settings,
+    store: QdrantStore | None,
+    provider: EmbeddingProvider | None,
+    lexical_profile: dict[str, Any],
+) -> tuple[list[SearchReadinessCheck], str | None]:
+    """Semantic-side readiness for ``hybrid_v1`` — every failure mode is its own loud check."""
+    checks: list[SearchReadinessCheck] = []
+    if provider is None:
+        checks.append(
+            SearchReadinessCheck(
+                name="embedding_provider_configured",
+                ok=False,
+                detail={"reason": "embedding_provider_not_configured"},
+            )
+        )
+        return checks, None
+    if store is None:
+        checks.append(
+            SearchReadinessCheck(
+                name="qdrant_configured", ok=False, detail={"reason": "qdrant_not_configured"}
+            )
+        )
+        return checks, None
+
+    try:
+        collection = store.resolve_alias(settings.qdrant_collection_alias)
+        checks.append(
+            SearchReadinessCheck(
+                name="semantic_alias_single_target", ok=True, detail={"collection": collection}
+            )
+        )
+        profile = read_semantic_profile(collection, directory=settings.semantic_index_profiles_dir)
+        point_count = store.count_points(collection)
+        checks.append(
+            SearchReadinessCheck(
+                name="semantic_collection_non_empty",
+                ok=point_count > 0,
+                detail={"point_count": point_count},
+            )
+        )
+        code_mismatches = profile_compatibility_mismatches(
+            profile,
+            expected=expected_runtime_compatibility(
+                embedding_provider=settings.embedding_provider,
+                embedding_model=settings.embedding_model,
+                embedding_dimensions=settings.embedding_dimensions,
+            ),
+        )
+        checks.append(
+            SearchReadinessCheck(
+                name="semantic_profile_compatible",
+                ok=not code_mismatches,
+                detail={"mismatches": code_mismatches} if code_mismatches else {},
+            )
+        )
+        config_mismatches = collection_config_mismatches(
+            store.collection_config(collection), profile
+        )
+        checks.append(
+            SearchReadinessCheck(
+                name="semantic_collection_config_match",
+                ok=not config_mismatches,
+                detail={"mismatches": config_mismatches} if config_mismatches else {},
+            )
+        )
+        corpus_mismatches = hybrid_corpus_mismatches(lexical_profile, profile)
+        checks.append(
+            SearchReadinessCheck(
+                name="hybrid_corpus_compatible",
+                ok=not corpus_mismatches,
+                detail={"mismatches": corpus_mismatches} if corpus_mismatches else {},
+            )
+        )
+        return checks, collection
+    except QdrantError as exc:
+        checks.append(
+            SearchReadinessCheck(
+                name="qdrant_reachable",
+                ok=False,
+                detail={"reason": exc.reason, "message": exc.message},
+            )
+        )
+        return checks, None
 
 
 def _profile_provenance(profile: dict[str, Any]) -> dict[str, Any]:

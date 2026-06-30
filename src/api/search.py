@@ -65,8 +65,10 @@ def search_execute(
 def search_readiness(
     response: Response,
     adapter: OpenSearchAdapter | None = Depends(get_search_adapter),
+    store: QdrantStore | None = Depends(get_qdrant_store),
+    provider: EmbeddingProvider | None = Depends(get_embedding_provider),
 ) -> SearchReadinessResponse:
-    readiness = check_search_readiness(get_settings(), adapter)
+    readiness = check_search_readiness(get_settings(), adapter, store, provider)
     response.status_code = (
         status.HTTP_200_OK if readiness.ready else status.HTTP_503_SERVICE_UNAVAILABLE
     )

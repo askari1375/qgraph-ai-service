@@ -121,8 +121,9 @@ def expected_code_compatibility() -> dict[str, Any]:
     """The compatibility fields a running service fixes from code constants alone.
 
     Excludes ``embedding_provider``/``embedding_model``/``embedding_dimensions``: those are facts about
-    the *runtime provider*, checked at readiness once a provider is wired (later phase). The partial
-    dict is fine — :func:`profile_compatibility_mismatches` only compares keys present here.
+    the *runtime provider*, added by :func:`expected_runtime_compatibility` once a provider is
+    configured. The partial dict is fine — :func:`profile_compatibility_mismatches` only compares keys
+    present here.
     """
     return {
         "document_schema_version": DOCUMENT_SCHEMA_VERSION,
@@ -131,6 +132,46 @@ def expected_code_compatibility() -> dict[str, Any]:
         "chunking_profile_version": CHUNKING_PROFILE_VERSION,
         "vector_name": VECTOR_NAME,
         "distance_metric": DISTANCE_METRIC,
+    }
+
+
+def expected_runtime_compatibility(
+    *, embedding_provider: str, embedding_model: str, embedding_dimensions: int
+) -> dict[str, Any]:
+    """Code-constant compatibility plus the configured runtime provider/model/dimensions.
+
+    A query embedded with a different provider/model/dimension than the collection was built with is
+    silently meaningless, so hybrid readiness checks the active collection's profile against these.
+    """
+    return {
+        **expected_code_compatibility(),
+        "embedding_provider": embedding_provider,
+        "embedding_model": embedding_model,
+        "embedding_dimensions": embedding_dimensions,
+    }
+
+
+#: Fields that the active lexical and semantic indexes must agree on to be fused (same searchable
+#: corpus + document/normalization contract). Snapshot id/hash are provenance per-backend, but a
+#: hybrid query fuses two backends, so here they are a hard equality gate.
+_HYBRID_CORPUS_FIELDS = (
+    "corpus_snapshot_id",
+    "corpus_snapshot_hash",
+    "document_schema_version",
+    "normalization_profile_id",
+    "normalization_profile_version",
+)
+
+
+def hybrid_corpus_mismatches(
+    lexical_profile: dict[str, Any], semantic_profile: SemanticIndexProfile
+) -> dict[str, dict[str, Any]]:
+    """Return ``{field: {lexical, semantic}}`` where the active lexical/semantic corpora disagree."""
+    semantic = semantic_profile.model_dump()
+    return {
+        field: {"lexical": lexical_profile.get(field), "semantic": semantic.get(field)}
+        for field in _HYBRID_CORPUS_FIELDS
+        if lexical_profile.get(field) != semantic.get(field)
     }
 
 
