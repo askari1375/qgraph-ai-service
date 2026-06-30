@@ -1,7 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+RetrievalPolicy = Literal["lexical_v1", "hybrid_v1"]
 
 
 class Settings(BaseSettings):
@@ -22,10 +25,11 @@ class Settings(BaseSettings):
     search_backend_name: str = "qgraph-ai-search"
     search_backend_version: str = "2026-04-01"
     # Retrieval policy: "lexical_v1" (OpenSearch only) or "hybrid_v1" (OpenSearch + Qdrant + RRF).
-    # Defaults to lexical_v1; switch to hybrid_v1 only after a semantic collection and the embedding
-    # provider are built, activated, and pass readiness. Both are real backends — hybrid never silently
-    # degrades to lexical when Qdrant or the provider is unavailable.
-    search_retrieval_policy: str = "lexical_v1"
+    # A constrained Literal so an unknown/typo'd value fails fast at startup instead of silently
+    # running lexical. Defaults to lexical_v1; switch to hybrid_v1 only after a semantic collection and
+    # the embedding provider are built, activated, and pass readiness. Both are real backends — hybrid
+    # never silently degrades to lexical when Qdrant or the provider is unavailable.
+    search_retrieval_policy: RetrievalPolicy = "lexical_v1"
     search_corpus_snapshot_cache_dir: Path = Path("data/corpus_snapshots")
     # Heuristic scale for mapping an absolute BM25 score to a 0..1 confidence via
     # 1 - exp(-score / k). Larger k => more conservative confidence. Tune against

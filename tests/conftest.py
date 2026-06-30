@@ -3,7 +3,15 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from src.config import Settings, get_settings
 from src.main import create_app
+
+# Hermetic tests: never read the developer's local `.env`. It may point at live backends, select
+# `hybrid_v1`, or carry a real API key — none of which a unit test should pick up. After this, Settings
+# come only from explicit kwargs + code defaults, so "normal tests need neither live Qdrant nor paid
+# calls" is enforced by isolation rather than assumed. Runs at collection time, before any fixture.
+Settings.model_config["env_file"] = None
+get_settings.cache_clear()
 
 
 @pytest.fixture(scope="session")
