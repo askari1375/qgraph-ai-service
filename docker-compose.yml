@@ -27,6 +27,8 @@ services:
       QGRAPH_AI_OPENSEARCH_USERNAME: "admin"
       QGRAPH_AI_OPENSEARCH_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DevAdmin123!}"
       QGRAPH_AI_OPENSEARCH_VERIFY_CERTS: "false"
+      # Local Qdrant (started under the `search` profile); internal-only, no auth in dev.
+      QGRAPH_AI_QDRANT_URL: "http://qdrant:6333"
     healthcheck:
       test:
         [
@@ -65,5 +67,16 @@ services:
       retries: 20
       start_period: 60s
 
+  qdrant:
+    # Semantic-retrieval vector store. Local-dev only; production Qdrant is owned by qgraph-deploy.
+    image: ${QGRAPH_QDRANT_IMAGE:-qdrant/qdrant:v1.12.4}
+    profiles:
+      - search
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
 volumes:
   opensearch-data:
+  qdrant-data:

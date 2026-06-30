@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     opensearch_verify_certs: bool = True
     opensearch_ca_cert_path: str = ""
 
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+    qdrant_timeout_seconds: float = 10.0
+    # The serving alias the app queries; activation repoints it at a new physical collection version.
+    qdrant_collection_alias: str = "qgraph-ayah-semantic-active"
+    # Physical collection versions are named "<prefix>-<YYYYMMDD>-<NNN>".
+    qdrant_collection_prefix: str = "qgraph-ayah-semantic"
+    # The single named dense vector per collection.
+    qdrant_vector_name: str = "content"
+    # Immutable per-collection profile sidecars (Qdrant has no OpenSearch-style _meta). Must be
+    # persistent and shared with any future replicas.
+    semantic_index_profiles_dir: Path = Path("data/semantic_index_profiles")
+
     segmentation_model_name: str = "segmentation-pipeline"
     segmentation_model_version: str = "2026-04-01"
     segmentation_artifacts_dir: Path = Path("data/segmentation_artifacts")
