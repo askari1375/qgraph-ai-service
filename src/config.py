@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     semantic_index_profiles_dir: Path = Path("data/semantic_index_profiles")
     # Documents embedded per provider call during a semantic build (Cohere caps a batch at 96).
     embedding_document_batch_size: int = 96
+    # Production embedding provider resolved by build_embedding_provider. Empty => no provider is
+    # configured (the safe default), so a real semantic build fails loudly rather than guessing.
+    # Production value: "openai".
+    embedding_provider: str = ""
+    # Provider model id and its native output dimension. Both are immutable per collection and stamped
+    # into the semantic profile; changing either means building a new collection, never an in-place
+    # migration. Production: "text-embedding-3-large" / 3072 (no dimension reduction in V1).
+    embedding_model: str = ""
+    embedding_dimensions: int = 0
+    embedding_api_key: str = ""
+    embedding_timeout_seconds: float = 30.0
+    embedding_max_retries: int = 2
 
     segmentation_model_name: str = "segmentation-pipeline"
     segmentation_model_version: str = "2026-04-01"
