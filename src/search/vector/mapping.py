@@ -13,18 +13,20 @@ from qdrant_client import models
 
 from src.search.contracts import SearchFilters
 from src.search.indexing.documents import SearchIndexDocument
+from src.search.vector.corpus_policy import is_canonical_translation
 
 #: Fixed namespace so point IDs are stable across rebuilds. Qdrant point IDs must be int or UUID, so
 #: the string ``document.id`` (e.g. ``"ayah:2:255:ar"``) is hashed into a deterministic UUIDv5.
 QDRANT_POINT_NAMESPACE = uuid.UUID("d3f4a1b2-9c8e-5f7a-b6d2-0123456789ab")
 
-#: Payload fields that back ``SearchFilters``, with the Qdrant payload-index kind for each.
+#: Payload fields that back ``SearchFilters`` (plus the scope flag), with the Qdrant payload-index kind.
 PAYLOAD_INDEX_FIELDS: dict[str, str] = {
     "content_type": "keyword",
     "language_code": "keyword",
     "source_id": "keyword",
     "surah_number": "integer",
     "ayah_global_number": "integer",
+    "is_canonical_translation": "bool",
 }
 
 
@@ -47,6 +49,9 @@ def build_point_payload(document: SearchIndexDocument) -> dict[str, Any]:
         "language_code": metadata.language_code,
         "source_id": metadata.source_id,
         "source_name": metadata.source_name,
+        # Scope flag: the curated canonical translation per language (Arabic ayahs are False). Recorded
+        # so a future collection holding more sources can default-filter to the canonical scope.
+        "is_canonical_translation": is_canonical_translation(metadata.source_id),
     }
 
 

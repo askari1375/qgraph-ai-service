@@ -60,6 +60,7 @@ class OpenAIEmbeddingProvider:
             model=model,
             dimensions=dimensions,
             distinguishes_input_modes=False,
+            vectors_normalized=True,
         )
         # Injected client (tests) wins; otherwise the SDK owns timeout/retry. The factory has already
         # checked the api key is present, so constructing a real client here will not fail on auth.

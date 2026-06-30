@@ -77,6 +77,7 @@ _DISTANCE_TO_NAME: dict[models.Distance, str] = {
 _PAYLOAD_SCHEMA_TYPES: dict[str, models.PayloadSchemaType] = {
     "keyword": models.PayloadSchemaType.KEYWORD,
     "integer": models.PayloadSchemaType.INTEGER,
+    "bool": models.PayloadSchemaType.BOOL,
 }
 
 

@@ -46,6 +46,8 @@ class EmbeddingProviderProfile(BaseModel):
     dimensions: int = Field(gt=0)
     #: True if the provider embeds documents and queries differently (e.g. Cohere ``input_type``).
     distinguishes_input_modes: bool = False
+    #: True if returned vectors are already L2-normalized (OpenAI is), so cosine == dot.
+    vectors_normalized: bool = False
 
 
 @runtime_checkable

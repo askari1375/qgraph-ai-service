@@ -35,6 +35,7 @@ class DeterministicEmbeddingProvider:
             model=model,
             dimensions=dimensions,
             distinguishes_input_modes=True,
+            vectors_normalized=True,
         )
 
     @property

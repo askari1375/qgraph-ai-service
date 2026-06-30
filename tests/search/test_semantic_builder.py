@@ -32,6 +32,8 @@ def _settings(tmp_path) -> Settings:
 
 
 def _ayah(surah: int, ayah: int, global_number: int) -> dict:
+    # The curated semantic corpus embeds Arabic + the canonical English (Arberry) and Persian (Moezzi)
+    # translations only, so the fixture carries exactly those translation sources.
     return {
         "surah_number": surah,
         "ayah_number": ayah,
@@ -40,10 +42,16 @@ def _ayah(surah: int, ayah: int, global_number: int) -> dict:
         "translations": [
             {
                 "language_code": "en",
-                "source_id": "en-sahih",
-                "source_name": "Sahih International",
-                "text": "In the name of Allah, the Entirely Merciful",
-            }
+                "source_id": "en.arberry",
+                "source_name": "Arberry",
+                "text": "In the Name of God, the Merciful, the Compassionate",
+            },
+            {
+                "language_code": "fa",
+                "source_id": "fa.moezzi",
+                "source_name": "Moezzi",
+                "text": "به نام خداوند بخشنده مهربان",
+            },
         ],
     }
 
@@ -83,7 +91,7 @@ def test_build_creates_collection_and_writes_profile(monkeypatch, tmp_path):
     assert report["ok"] is True
     assert report["activated"] is False
     assert report["collection"].startswith("qgraph-ayah-semantic-")
-    # 2 ayat x (arabic + english) + 2 surah-name docs (arabic + transliteration).
+    # 2 ayat x (arabic + arberry + moezzi); surah-name docs are excluded by the corpus policy.
     assert report["document_count"] == 6
     assert report["embedding_provider"] == "deterministic-test"
     assert store.count_points(report["collection"]) == 6
@@ -136,7 +144,8 @@ def test_dry_run_writes_nothing_and_skips_provider(monkeypatch, tmp_path):
     )
 
     assert report["dry_run"] is True
-    assert report["language_counts"] == {"ar": 3, "en": 3}
+    # Surah-name docs are dropped; only the curated Arabic + Arberry + Moezzi ayah docs remain.
+    assert report["language_counts"] == {"ar": 2, "en": 2, "fa": 2}
     assert report["embedding_dimensions"] == 8
     assert store.list_collections() == []  # nothing created
 

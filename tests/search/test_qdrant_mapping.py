@@ -50,9 +50,21 @@ def test_build_point_payload_is_flat_and_complete():
         "language_code": "ar",
         "source_id": "quran-uthmani",
         "source_name": "Uthmani",
+        "is_canonical_translation": False,
     }
     # Every payload-index field is a real payload key.
     assert set(PAYLOAD_INDEX_FIELDS) <= set(payload)
+
+
+def test_canonical_translation_payload_flag_is_set():
+    document = _document().model_copy(
+        update={
+            "metadata": _document().metadata.model_copy(
+                update={"source_id": "fa.moezzi", "language_code": "fa"}
+            )
+        }
+    )
+    assert build_point_payload(document)["is_canonical_translation"] is True
 
 
 def test_compile_filter_none_when_no_conditions():

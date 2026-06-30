@@ -7,6 +7,7 @@ the lexical ``build_index_profile`` provenance and ``compatibility_mismatches`` 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -27,16 +28,38 @@ from src.search.indexing.normalization import (
     NORMALIZATION_PROFILE_ID,
     NORMALIZATION_PROFILE_VERSION,
 )
+from src.search.vector.corpus_policy import (
+    SEMANTIC_CORPUS_POLICY_ID,
+    SEMANTIC_CORPUS_POLICY_VERSION,
+    default_scope_descriptor,
+)
 from src.search.vector.qdrant_store import CollectionConfig, QdrantError
 
-SEMANTIC_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_semantic_index_profile.v1"
+SEMANTIC_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_semantic_index_profile.v2"
 QDRANT_BACKEND_NAME = "qdrant"
 # The semantic side reuses the existing per-(text, language, source) search documents as the embedded
 # unit — no new Quran chunking. Recorded as an explicit, immutable profile.
 CHUNKING_PROFILE_ID = "qgraph_search_document_unit"
 CHUNKING_PROFILE_VERSION = "v1"
+# V1 stores one vector per existing search document; not a pluggable engine, just a recorded fact so a
+# future canonical-ayah averaging policy is a new eval-gated collection, never an in-place change.
+REPRESENTATION_POLICY_ID = "qgraph_semantic_representation"
+REPRESENTATION_POLICY_VERSION = "single_document_v1"
 VECTOR_NAME = "content"
 DISTANCE_METRIC = "cosine"
+
+
+def document_id_checksum(documents: list[SearchIndexDocument]) -> str:
+    """A stable checksum over the ordered embedded document IDs — the artifact's subset identity.
+
+    Two collections built from the same corpus snapshot but a different selected source set (or order)
+    get different checksums, so they can never look compatible just because their snapshot id matches.
+    """
+    digest = hashlib.sha256()
+    for doc in documents:
+        digest.update(doc.id.encode("utf-8"))
+        digest.update(b"\n")
+    return f"sha256:{digest.hexdigest()}"
 
 
 class SemanticIndexProfile(BaseModel):
@@ -60,14 +83,22 @@ class SemanticIndexProfile(BaseModel):
     embedding_input_profile_version: str = Field(min_length=1)
     chunking_profile_id: str = Field(min_length=1)
     chunking_profile_version: str = Field(min_length=1)
+    representation_policy_id: str = Field(min_length=1)
+    representation_policy_version: str = Field(min_length=1)
+    semantic_corpus_policy_id: str = Field(min_length=1)
+    semantic_corpus_policy_version: str = Field(min_length=1)
     embedding_provider: str = Field(min_length=1)
     embedding_model: str = Field(min_length=1)
     embedding_dimensions: int = Field(gt=0)
+    distinguishes_input_modes: bool
+    vectors_normalized: bool
     vector_name: str = Field(min_length=1)
     distance_metric: str = Field(min_length=1)
     created_at: str = Field(min_length=1)
     document_count: int = Field(ge=0)
     vector_count: int = Field(ge=0)
+    document_id_checksum: str = Field(min_length=1)
+    default_scope: dict[str, Any]
     included_languages: list[str]
     source_ids: list[str]
     content_types: list[str]
@@ -103,14 +134,22 @@ def build_semantic_profile(
         embedding_input_profile_version=EMBEDDING_INPUT_PROFILE_VERSION,
         chunking_profile_id=CHUNKING_PROFILE_ID,
         chunking_profile_version=CHUNKING_PROFILE_VERSION,
+        representation_policy_id=REPRESENTATION_POLICY_ID,
+        representation_policy_version=REPRESENTATION_POLICY_VERSION,
+        semantic_corpus_policy_id=SEMANTIC_CORPUS_POLICY_ID,
+        semantic_corpus_policy_version=SEMANTIC_CORPUS_POLICY_VERSION,
         embedding_provider=provider_profile.provider,
         embedding_model=provider_profile.model,
         embedding_dimensions=provider_profile.dimensions,
+        distinguishes_input_modes=provider_profile.distinguishes_input_modes,
+        vectors_normalized=provider_profile.vectors_normalized,
         vector_name=vector_name,
         distance_metric=distance_metric,
         created_at=datetime.now(timezone.utc).isoformat(),
         document_count=len(documents),
         vector_count=len(documents),
+        document_id_checksum=document_id_checksum(documents),
+        default_scope=default_scope_descriptor(),
         included_languages=sorted({doc.metadata.language_code for doc in documents}),
         source_ids=sorted({doc.metadata.source_id for doc in documents}),
         content_types=sorted({doc.metadata.content_type.value for doc in documents}),
@@ -130,6 +169,10 @@ def expected_code_compatibility() -> dict[str, Any]:
         "normalization_profile_version": NORMALIZATION_PROFILE_VERSION,
         "embedding_input_profile_version": EMBEDDING_INPUT_PROFILE_VERSION,
         "chunking_profile_version": CHUNKING_PROFILE_VERSION,
+        "representation_policy_id": REPRESENTATION_POLICY_ID,
+        "representation_policy_version": REPRESENTATION_POLICY_VERSION,
+        "semantic_corpus_policy_id": SEMANTIC_CORPUS_POLICY_ID,
+        "semantic_corpus_policy_version": SEMANTIC_CORPUS_POLICY_VERSION,
         "vector_name": VECTOR_NAME,
         "distance_metric": DISTANCE_METRIC,
     }
@@ -183,6 +226,10 @@ _COMPATIBILITY_FIELDS = (
     "normalization_profile_version",
     "embedding_input_profile_version",
     "chunking_profile_version",
+    "representation_policy_id",
+    "representation_policy_version",
+    "semantic_corpus_policy_id",
+    "semantic_corpus_policy_version",
     "embedding_provider",
     "embedding_model",
     "embedding_dimensions",

@@ -25,6 +25,7 @@ from src.search.embeddings.contracts import EmbeddingProvider, validate_embeddin
 from src.search.embeddings.factory import build_embedding_provider
 from src.search.embeddings.input import prepare_embedding_input
 from src.search.indexing.documents import SearchIndexDocument, build_search_documents
+from src.search.vector.corpus_policy import select_semantic_documents
 from src.search.vector.mapping import (
     PAYLOAD_INDEX_FIELDS,
     build_point_id,
@@ -68,7 +69,11 @@ def build_semantic_collection(
     documents = build_search_documents(snapshot)
     if not documents:
         raise QdrantError("Corpus snapshot produced no documents", reason="empty_corpus")
-    # Deterministic document-id order so points and any future checksum are reproducible.
+    # The lexical index keeps every translation; the semantic collection embeds only the curated
+    # corpus policy (Arabic + the canonical English/Persian translations). Carve that subset out before
+    # any paid embedding, failing loudly if it is incomplete.
+    documents = select_semantic_documents(documents)
+    # Deterministic document-id order so points and the profile checksum are reproducible.
     documents.sort(key=lambda doc: doc.id)
 
     store = store or _store(settings)
