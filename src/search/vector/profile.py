@@ -10,11 +10,23 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from src.api.schemas.corpus import QuranCorpusSnapshot
+from src.search.embeddings.contracts import EmbeddingProviderProfile
+from src.search.embeddings.input import (
+    EMBEDDING_INPUT_PROFILE_ID,
+    EMBEDDING_INPUT_PROFILE_VERSION,
+)
+from src.search.indexing.documents import DOCUMENT_SCHEMA_VERSION, SearchIndexDocument
+from src.search.indexing.normalization import (
+    NORMALIZATION_PROFILE_ID,
+    NORMALIZATION_PROFILE_VERSION,
+)
 from src.search.vector.qdrant_store import CollectionConfig, QdrantError
 
 SEMANTIC_INDEX_PROFILE_SCHEMA_VERSION = "qgraph_semantic_index_profile.v1"
@@ -59,6 +71,67 @@ class SemanticIndexProfile(BaseModel):
     included_languages: list[str]
     source_ids: list[str]
     content_types: list[str]
+
+
+def build_semantic_profile(
+    *,
+    collection_name: str,
+    snapshot: QuranCorpusSnapshot,
+    documents: list[SearchIndexDocument],
+    provider_profile: EmbeddingProviderProfile,
+    vector_name: str,
+    distance_metric: str = DISTANCE_METRIC,
+) -> SemanticIndexProfile:
+    """Assemble the immutable profile for a collection before any embedding call.
+
+    Parallels the lexical ``build_index_profile``: the code-constant compatibility versions plus the
+    snapshot provenance and build summary. Counts are known up front — one vector per document — so the
+    full profile exists before paid calls begin.
+    """
+    if not documents:
+        raise ValueError("documents must not be empty")
+    return SemanticIndexProfile(
+        collection_name=collection_name,
+        schema_version=SEMANTIC_INDEX_PROFILE_SCHEMA_VERSION,
+        backend=QDRANT_BACKEND_NAME,
+        corpus_snapshot_id=snapshot.corpus_snapshot_id,
+        corpus_snapshot_hash=snapshot.corpus_snapshot_hash,
+        document_schema_version=DOCUMENT_SCHEMA_VERSION,
+        normalization_profile_id=NORMALIZATION_PROFILE_ID,
+        normalization_profile_version=NORMALIZATION_PROFILE_VERSION,
+        embedding_input_profile_id=EMBEDDING_INPUT_PROFILE_ID,
+        embedding_input_profile_version=EMBEDDING_INPUT_PROFILE_VERSION,
+        chunking_profile_id=CHUNKING_PROFILE_ID,
+        chunking_profile_version=CHUNKING_PROFILE_VERSION,
+        embedding_provider=provider_profile.provider,
+        embedding_model=provider_profile.model,
+        embedding_dimensions=provider_profile.dimensions,
+        vector_name=vector_name,
+        distance_metric=distance_metric,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        document_count=len(documents),
+        vector_count=len(documents),
+        included_languages=sorted({doc.metadata.language_code for doc in documents}),
+        source_ids=sorted({doc.metadata.source_id for doc in documents}),
+        content_types=sorted({doc.metadata.content_type.value for doc in documents}),
+    )
+
+
+def expected_code_compatibility() -> dict[str, Any]:
+    """The compatibility fields a running service fixes from code constants alone.
+
+    Excludes ``embedding_provider``/``embedding_model``/``embedding_dimensions``: those are facts about
+    the *runtime provider*, checked at readiness once a provider is wired (later phase). The partial
+    dict is fine — :func:`profile_compatibility_mismatches` only compares keys present here.
+    """
+    return {
+        "document_schema_version": DOCUMENT_SCHEMA_VERSION,
+        "normalization_profile_version": NORMALIZATION_PROFILE_VERSION,
+        "embedding_input_profile_version": EMBEDDING_INPUT_PROFILE_VERSION,
+        "chunking_profile_version": CHUNKING_PROFILE_VERSION,
+        "vector_name": VECTOR_NAME,
+        "distance_metric": DISTANCE_METRIC,
+    }
 
 
 #: Fields that must match the running code / runtime expectation for a collection to be servable.
@@ -151,3 +224,8 @@ def read_semantic_profile(collection_name: str, *, directory: Path) -> SemanticI
             reason="semantic_profile_invalid",
             detail={"path": str(path)},
         ) from exc
+
+
+def delete_semantic_profile(collection_name: str, *, directory: Path) -> None:
+    """Remove a retired collection's sidecar so a deleted collection leaves no orphan profile."""
+    profile_path(collection_name, directory=directory).unlink(missing_ok=True)

@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # Immutable per-collection profile sidecars (Qdrant has no OpenSearch-style _meta). Must be
     # persistent and shared with any future replicas.
     semantic_index_profiles_dir: Path = Path("data/semantic_index_profiles")
+    # Documents embedded per provider call during a semantic build (Cohere caps a batch at 96).
+    embedding_document_batch_size: int = 96
 
     segmentation_model_name: str = "segmentation-pipeline"
     segmentation_model_version: str = "2026-04-01"

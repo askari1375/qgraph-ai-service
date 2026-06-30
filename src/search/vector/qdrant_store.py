@@ -98,6 +98,8 @@ class QdrantStore(Protocol):
 
     def collection_exists(self, name: str) -> bool: ...
 
+    def list_collections(self) -> list[str]: ...
+
     def collection_config(self, name: str) -> CollectionConfig: ...
 
     def query(
@@ -190,6 +192,10 @@ class QdrantClientStore:
     def collection_exists(self, name: str) -> bool:
         with _translate_errors("qdrant_request_failed", {"collection": name}):
             return self._client.collection_exists(collection_name=name)
+
+    def list_collections(self) -> list[str]:
+        with _translate_errors("qdrant_request_failed"):
+            return [c.name for c in self._client.get_collections().collections]
 
     def collection_config(self, name: str) -> CollectionConfig:
         with _translate_errors("qdrant_request_failed", {"collection": name}):

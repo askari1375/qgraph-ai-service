@@ -3,9 +3,15 @@
 import pytest
 from pydantic import ValidationError
 
+from src.api.schemas.corpus import QuranCorpusSnapshot
+from src.search.embeddings.contracts import EmbeddingProviderProfile
+from src.search.indexing.documents import build_search_documents
 from src.search.vector.profile import (
     SemanticIndexProfile,
+    build_semantic_profile,
     collection_config_mismatches,
+    delete_semantic_profile,
+    expected_code_compatibility,
     profile_compatibility_mismatches,
     read_semantic_profile,
     write_semantic_profile,
@@ -110,3 +116,78 @@ def test_collection_config_mismatch_detected():
     bad = CollectionConfig(vector_name="content", dimensions=512, distance="dot")
     mismatches = collection_config_mismatches(bad, profile)
     assert set(mismatches) == {"dimensions", "distance"}
+
+
+def _snapshot() -> QuranCorpusSnapshot:
+    return QuranCorpusSnapshot.model_validate(
+        {
+            "schema_version": "qgraph-corpus-snapshot-v1",
+            "corpus_snapshot_id": "snap-9",
+            "corpus_snapshot_hash": "sha256:def",
+            "produced_at": "2026-06-30T00:00:00Z",
+            "filters": {},
+            "counts": {},
+            "translation_sources": [],
+            "surahs": [{"number": 1, "arabic_name": "الفاتحة", "transliteration": "Al-Fatihah"}],
+            "ayahs": [
+                {
+                    "surah_number": 1,
+                    "ayah_number": 1,
+                    "ayah_global_number": 1,
+                    "text_ar": "بسم الله الرحمن الرحيم",
+                    "translations": [
+                        {
+                            "language_code": "en",
+                            "source_id": "en-sahih",
+                            "source_name": "Sahih International",
+                            "text": "In the name of Allah",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def test_build_semantic_profile_assembles_identity_and_counts():
+    snapshot = _snapshot()
+    documents = build_search_documents(snapshot)
+    provider_profile = EmbeddingProviderProfile(
+        provider="cohere", model="embed-v4", dimensions=1024, distinguishes_input_modes=True
+    )
+    profile = build_semantic_profile(
+        collection_name="qgraph-ayah-semantic-20260630-001",
+        snapshot=snapshot,
+        documents=documents,
+        provider_profile=provider_profile,
+        vector_name="content",
+    )
+    assert profile.collection_name == "qgraph-ayah-semantic-20260630-001"
+    assert profile.corpus_snapshot_id == "snap-9"
+    assert profile.embedding_provider == "cohere"
+    assert profile.embedding_model == "embed-v4"
+    assert profile.embedding_dimensions == 1024
+    assert profile.document_count == profile.vector_count == len(documents)
+    assert profile.included_languages == ["ar", "en"]
+    # Built profile passes the code-constant compatibility gate it was built from.
+    assert profile_compatibility_mismatches(profile, expected=expected_code_compatibility()) == {}
+
+
+def test_build_semantic_profile_rejects_empty_documents():
+    with pytest.raises(ValueError):
+        build_semantic_profile(
+            collection_name="c",
+            snapshot=_snapshot(),
+            documents=[],
+            provider_profile=EmbeddingProviderProfile(provider="p", model="m", dimensions=8),
+            vector_name="content",
+        )
+
+
+def test_delete_semantic_profile_is_idempotent(tmp_path):
+    profile = _profile()
+    write_semantic_profile(profile, directory=tmp_path)
+    delete_semantic_profile(profile.collection_name, directory=tmp_path)
+    delete_semantic_profile(profile.collection_name, directory=tmp_path)  # missing_ok
+    with pytest.raises(QdrantError):
+        read_semantic_profile(profile.collection_name, directory=tmp_path)

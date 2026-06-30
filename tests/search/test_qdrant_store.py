@@ -85,6 +85,14 @@ def test_resolve_missing_alias_raises():
     assert excinfo.value.reason == "semantic_alias_invalid"
 
 
+def test_list_collections():
+    store = _store()
+    assert store.list_collections() == []
+    store.create_collection("c1", vector_name="content", dimensions=4, distance="cosine")
+    store.create_collection("c2", vector_name="content", dimensions=4, distance="cosine")
+    assert sorted(store.list_collections()) == ["c1", "c2"]
+
+
 def test_delete_collection():
     store = _store()
     store.create_collection("c1", vector_name="content", dimensions=4, distance="cosine")
