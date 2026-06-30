@@ -18,24 +18,24 @@ from src.services.search_service import build_search_adapter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # One backend client per process, reused across requests and closed on shutdown. Each is built
-    # only when its config is present (constructing a client does not open a connection); when it is
-    # not, the request path fails loudly rather than silently using a per-request client. The hybrid
-    # backends (Qdrant, embedding provider) are needed only by the hybrid_v1 retrieval policy.
+    # One backend client per process, reused across requests and closed on shutdown. Constructing a
+    # client does not open a connection. The hybrid backends (Qdrant, embedding provider) are built
+    # only under the hybrid_v1 policy that actually uses them — so a lexical_v1 deployment never fails
+    # to start over half-configured hybrid settings, and a hybrid_v1 deployment fails loudly here if
+    # the provider/store are misconfigured rather than at the first query.
     settings = get_settings()
     app.state.search_adapter = build_search_adapter(settings) if settings.opensearch_url else None
+    hybrid = settings.search_retrieval_policy == "hybrid_v1"
     app.state.qdrant_store = (
         build_qdrant_store(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
             timeout_seconds=settings.qdrant_timeout_seconds,
         )
-        if settings.qdrant_url
+        if hybrid and settings.qdrant_url
         else None
     )
-    app.state.embedding_provider = (
-        build_embedding_provider(settings) if settings.embedding_provider else None
-    )
+    app.state.embedding_provider = build_embedding_provider(settings) if hybrid else None
     try:
         yield
     finally:
